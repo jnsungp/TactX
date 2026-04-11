@@ -1,0 +1,9 @@
+# .gitignore
+checkpoints/
+processed_data/
+tactile_data_new/
+wandb/
+*.egg-info/
+__pycache__/
+*.ipynb_checkpoints/
+.DS_Store
