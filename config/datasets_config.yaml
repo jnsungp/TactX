@@ -332,10 +332,10 @@ dataset_7:
       - 'pattern_36'
 
 # ============================================================
-# Cross-Modal Dataset: Daimon (image) + eFlesh (magnetic)
-# Contact frames only (Daimon B-ch mean > 0.005), Daimon mirror-flipped
-# Train: large_ball 100 episodes (6550 contact frames)
-# Val:   large_ball_val 20 episodes (1184 contact frames)
+# Cross-Modal Dataset: Daimon (depth from s0) + eFlesh (magnetic)
+# 4 objects: can (3264), cylinder (6477), large_ball (6579), small_ball (9943) = 26263 frames
+# Contact filter: both sensors must be in contact
+# Stats computed from all 4 training objects combined
 # ============================================================
 dataset_cross_modal:
   dataset_type: 'cross_modal'
@@ -351,24 +351,30 @@ dataset_cross_modal:
   daimon_channels: 3
 
   daimon_stats:
-    mean: [0.079376, 0.079376, 0.079376]
-    std: [0.195896, 0.195896, 0.195896]
+    mean: [0.140213, 0.140213, 0.140213]
+    std: [0.344194, 0.344194, 0.344194]
 
   eflesh_stats:
-    mean: [141.604843, -617.990784, -191.400055, -320.950104, -211.635635, 608.210388, 167.470383, 592.849915, -1064.832275, -307.24704, -399.61908, 73.01638, -638.286926, 62.867298, -133.787811]
-    std: [288.426941, 514.138794, 401.038971, 347.484497, 271.838562, 533.749634, 237.794952, 338.499481, 831.833801, 431.263702, 457.626465, 348.636169, 423.989899, 225.484909, 285.578033]
+    mean: [152.491379, -997.969238, -235.306793, -296.186279, -324.224182, 887.282104, 357.210266, 649.624878, -1627.697510, -369.944214, -213.261444, 10.165204, -867.316528, 90.512642, -136.725937]
+    std: [230.131607, 665.418091, 336.283630, 299.250336, 311.854401, 601.129700, 300.285858, 366.601929, 1032.201782, 398.707611, 525.211243, 234.679443, 572.564819, 219.487534, 221.267029]
 
   daimon_path: 'processed_data/cross_modal/daimon'
   eflesh_path: 'processed_data/cross_modal/eflesh'
 
-  n_classes_training: 1
+  n_classes_training: 4
   n_classes_test: 0
 
   tools:
     training_tools:
+      - 'can'
+      - 'cylinder'
       - 'large_ball'
+      - 'small_ball'
 
     val_tools:
+      - 'can_val'
+      - 'cylinder_val'
       - 'large_ball_val'
+      - 'small_ball_val'
 
     test_tools: []

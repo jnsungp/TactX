@@ -25,7 +25,7 @@ simclr:
 cross_modal:
   # train options
   seed: 42
-  batch_size: 32
+  batch_size: 64
   start_epoch: 0
   epochs: 100
   pretrain: True

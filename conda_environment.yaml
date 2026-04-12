@@ -1,4 +1,4 @@
-name: cttp_env
+name: cmt
 channels:
   - pytorch
   - nvidia
@@ -47,4 +47,4 @@ dependencies:
     - git+https://github.com/Spijkervet/SimCLR.git
 
     # CTTP 프로젝트 자체 패키지 설치
-    - -e /home/junsung/CTTP
+    - -e /home/junsung/cross_modal_tactile
