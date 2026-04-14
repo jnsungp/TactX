@@ -1,0 +1,5 @@
+{
+    "train": ["pnp_fsr_25m_state", 
+              "pnp_fsr_00m_state"],
+    "val": ["pnp_val_state"]
+}

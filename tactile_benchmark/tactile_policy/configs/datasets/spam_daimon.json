@@ -1,0 +1,5 @@
+{
+    "train": ["spam_daimon"
+            ],
+    "val": ["spam_daimon_val"]
+}

@@ -8,6 +8,7 @@ Processing steps:
   2. eFlesh (magnetic): s1 (5, 3) flattened to (15,)
   3. Contact filtering: 양쪽 센서 모두 접촉 상태여야 저장
      - Daimon depth mean > threshold AND eFlesh abs mean > threshold
+     - 단, 에피소드당 첫 프레임은 contact filter 면제 (비접촉 reference)
   4. Computes normalization statistics for datasets_config.yaml
 
 Usage:
@@ -16,6 +17,7 @@ Usage:
   python scripts/preprocess_cross_modal.py --eflesh_contact_threshold 0.01
   python scripts/preprocess_cross_modal.py --no_contact_filter
   python scripts/preprocess_cross_modal.py --no_mirror
+  python scripts/preprocess_cross_modal.py --no_ref_frame  # 비접촉 reference 프레임 비활성화
   python scripts/preprocess_cross_modal.py --raw_train path/to/train --raw_val path/to/val --train_name my_object
 """
 
@@ -32,17 +34,17 @@ from tqdm import tqdm
 def parse_args():
     parser = argparse.ArgumentParser(description="Preprocess cross-modal tactile data")
     parser.add_argument("--raw_train", type=str,
-                        default="tactile_data_new/left_daimon_right_eflesh_large_ball",
+                        default="/home/junsung/ExtHDD/sachin/tactile_data_eflesh_daimon/left_daimon_right_eflesh_cylinder_train",
                         help="Raw training data directory")
     parser.add_argument("--raw_val", type=str,
-                        default="tactile_data_new/left_daimon_right_eflesh_large_ball_val",
+                        default="/home/junsung/ExtHDD/sachin/tactile_data_eflesh_daimon/left_daimon_right_eflesh_cylinder_val",
                         help="Raw validation data directory")
     parser.add_argument("--output_dir", type=str,
                         default="processed_data/cross_modal",
                         help="Output root directory")
-    parser.add_argument("--train_name", type=str, default="large_ball",
+    parser.add_argument("--train_name", type=str, default="cylinder",
                         help="Training tool/object name")
-    parser.add_argument("--val_name", type=str, default="large_ball_val",
+    parser.add_argument("--val_name", type=str, default="cylinder_val",
                         help="Validation tool/object name")
     parser.add_argument("--contact_threshold", type=float, default=0.005,
                         help="Daimon depth mean threshold for contact detection")
@@ -52,6 +54,8 @@ def parse_args():
                         help="Disable contact filtering (keep all frames)")
     parser.add_argument("--no_mirror", action="store_true",
                         help="Disable horizontal mirror flip on Daimon depth")
+    parser.add_argument("--no_ref_frame", action="store_true",
+                        help="Disable including first frame as no-contact reference")
     return parser.parse_args()
 
 
@@ -70,7 +74,7 @@ def extract_depth_from_s0(s0):
 
 def process_episodes(raw_data_root, output_daimon, output_eflesh,
                      contact_threshold, eflesh_contact_threshold,
-                     mirror, label):
+                     mirror, include_ref_frame, label):
     """Process all episodes in a directory, saving .pt files."""
     if os.path.exists(output_daimon):
         shutil.rmtree(output_daimon)
@@ -90,6 +94,7 @@ def process_episodes(raw_data_root, output_daimon, output_eflesh,
     total_pixels = 0
     total_saved = 0
     total_skipped = 0
+    total_ref_saved = 0
 
     for ep in tqdm(range(num_episodes), desc=f"{label}"):
         ep_dir = os.path.join(raw_data_root, f"episode_{ep:04d}")
@@ -100,6 +105,8 @@ def process_episodes(raw_data_root, output_daimon, output_eflesh,
             os.path.join(ep_dir, f) for f in os.listdir(ep_dir)
             if f.endswith(".pkl") and f != "metadata.pkl"
         ])
+
+        ref_saved_this_ep = False
 
         for frame_idx, pkl_path in enumerate(pkl_files):
             with open(pkl_path, "rb") as f:
@@ -113,10 +120,18 @@ def process_episodes(raw_data_root, output_daimon, output_eflesh,
             s1 = data["s1"].astype(np.float32)
 
             # Contact filter: BOTH sensors must be in contact
+            is_contact = True
             if contact_threshold is not None:
                 daimon_contact = np.abs(depth).mean() > contact_threshold
                 eflesh_contact = np.abs(s1).mean() > eflesh_contact_threshold
-                if not (daimon_contact and eflesh_contact):
+                is_contact = daimon_contact and eflesh_contact
+
+            if not is_contact:
+                # 에피소드 첫 비접촉 프레임 1개는 reference로 포함
+                if include_ref_frame and not ref_saved_this_ep:
+                    ref_saved_this_ep = True
+                    total_ref_saved += 1
+                else:
                     total_skipped += 1
                     continue
 
@@ -153,7 +168,7 @@ def process_episodes(raw_data_root, output_daimon, output_eflesh,
             "eflesh_mean": e_mean, "eflesh_std": e_std,
         }
 
-    return total_saved, total_skipped, stats
+    return total_saved, total_skipped, total_ref_saved, stats
 
 
 def print_yaml_config(stats):
@@ -174,12 +189,14 @@ def main():
     mirror = not args.no_mirror
     contact_threshold = None if args.no_contact_filter else args.contact_threshold
     eflesh_contact_threshold = args.eflesh_contact_threshold
+    include_ref_frame = not args.no_ref_frame
 
     print("=" * 60)
     print("Cross-Modal Data Preprocessing")
     print("=" * 60)
     print(f"  Daimon source  : s0 depth channel")
     print(f"  Contact filter : {'OFF' if contact_threshold is None else f'daimon={contact_threshold}, eflesh={eflesh_contact_threshold}'}")
+    print(f"  Ref frame      : {'ON (1 per episode)' if include_ref_frame else 'OFF'}")
     print(f"  Mirror flip    : {'ON' if mirror else 'OFF'}")
     print(f"  Output dir     : {args.output_dir}")
     print()
@@ -189,12 +206,12 @@ def main():
         print(f"[Train] {args.raw_train}")
         out_d = os.path.join(args.output_dir, "daimon", args.train_name)
         out_e = os.path.join(args.output_dir, "eflesh", args.train_name)
-        saved, skipped, train_stats = process_episodes(
+        saved, skipped, ref_saved, train_stats = process_episodes(
             args.raw_train, out_d, out_e, contact_threshold,
-            eflesh_contact_threshold, mirror, "Train"
+            eflesh_contact_threshold, mirror, include_ref_frame, "Train"
         )
         total = saved + skipped
-        print(f"  Saved: {saved}, Skipped: {skipped} ({skipped/total*100:.1f}% non-contact)")
+        print(f"  Saved: {saved} (contact: {saved - ref_saved}, ref: {ref_saved}), Skipped: {skipped} ({skipped/total*100:.1f}%)")
         print(f"  → {out_d}")
         print(f"  → {out_e}")
     else:
@@ -208,12 +225,12 @@ def main():
         print(f"[Val] {args.raw_val}")
         out_d = os.path.join(args.output_dir, "daimon", args.val_name)
         out_e = os.path.join(args.output_dir, "eflesh", args.val_name)
-        saved, skipped, _ = process_episodes(
+        saved, skipped, ref_saved, _ = process_episodes(
             args.raw_val, out_d, out_e, contact_threshold,
-            eflesh_contact_threshold, mirror, "Val"
+            eflesh_contact_threshold, mirror, include_ref_frame, "Val"
         )
         total = saved + skipped
-        print(f"  Saved: {saved}, Skipped: {skipped} ({skipped/total*100:.1f}% non-contact)")
+        print(f"  Saved: {saved} (contact: {saved - ref_saved}, ref: {ref_saved}), Skipped: {skipped} ({skipped/total*100:.1f}%)")
         print(f"  → {out_d}")
         print(f"  → {out_e}")
     else:

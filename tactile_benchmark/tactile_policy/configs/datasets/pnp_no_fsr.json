@@ -1,0 +1,5 @@
+{
+    "train": ["pnp_25m", 
+              "pnp_00m"],
+    "val": ["pnp_nofsr_val"]
+}

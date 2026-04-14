@@ -1,0 +1,6 @@
+{
+    "train": ["pnp_fsr_25m_action", 
+              "pnp_fsr_00m_action"
+            ],
+    "val": ["pnp_val_action"]
+}

@@ -1,0 +1,5 @@
+{
+    "train": ["plug_flexi"
+            ],
+    "val": ["plug_flexi_val"]
+}

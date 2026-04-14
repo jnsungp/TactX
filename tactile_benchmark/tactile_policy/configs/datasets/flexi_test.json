@@ -1,0 +1,4 @@
+{
+    "train": ["pnp_flexi_test"],
+    "val": ["pnp_flexi_test"]
+}
