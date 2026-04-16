@@ -1,0 +1,4 @@
+{
+    "train": ["pnp_daimon_latent"],
+    "val": ["pnp_daimon_latent_val"]
+}

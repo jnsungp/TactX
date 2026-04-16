@@ -2,9 +2,7 @@
 Convert observation.tac0 / observation.tac1 in HDF5 episodes to latent space z (64-dim)
 using a trained CrossModalCLR checkpoint.
 
-Two dataset types are supported:
   - daimon: tac0/tac1 are (N, 384000) raw sensor → extract depth (240×320) → image encoder → z
-  - eflesh: tac0/tac1 are (N, 15) magnetic readings → magnetic encoder → z
 
 Usage:
   python scripts/convert_tac_to_latent.py
@@ -32,20 +30,14 @@ from joint_embedding_learning.utils.models_setup import get_model
 def parse_args():
     parser = argparse.ArgumentParser(description="Convert tac0/tac1 to latent z using trained CrossModalCLR")
     parser.add_argument("--checkpoint_dir", type=str,
-                        default="checkpoints/cross_modal/dataset_cross_modal_run_20260411_220509",
+                        default="checkpoints/cross_modal/cross_modal/dataset_cross_modal_run_20260411_220509",
                         help="Path to checkpoint directory containing model.pt and yaml configs")
     parser.add_argument("--daimon_input_dir", type=str,
-                        default="/media/ExtHDD/anya/tactile_proj/data/spam_daimon_processed",
+                        default="/home/junsung/cross_modal_tactile/dai_dai_small_ball/processed",
                         help="Directory with daimon HDF5 episodes (tac0/tac1 shape: N×384000)")
-    parser.add_argument("--eflesh_input_dir", type=str,
-                        default="/media/ExtHDD/anya/tactile_proj/data/spam_eflesh_processed",
-                        help="Directory with eflesh HDF5 episodes (tac0/tac1 shape: N×15)")
     parser.add_argument("--daimon_output_dir", type=str,
-                        default="/media/ExtHDD/junsung/tactile_data/spam_daimon_latent",
+                        default="/home/junsung/cross_modal_tactile/dai_dai_small_ball/latent",
                         help="Output directory for daimon latent episodes")
-    parser.add_argument("--eflesh_output_dir", type=str,
-                        default="/media/ExtHDD/junsung/tactile_data/spam_eflesh_latent",
-                        help="Output directory for eflesh latent episodes")
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--batch_size", type=int, default=64)
     return parser.parse_args()
@@ -110,28 +102,9 @@ def encode_daimon_batch(model, batch, transform, device):
     return z.cpu().numpy()
 
 
-@torch.no_grad()
-def encode_eflesh_batch(model, batch, eflesh_mean, eflesh_std, device):
-    """
-    Encode a batch of eflesh magnetic readings to latent z.
-    batch: (B, 15) numpy float32
-    Returns: (B, 64) numpy float32
-    """
-    x = torch.from_numpy(batch).float()
-    if eflesh_mean is not None and eflesh_std is not None:
-        x = (x - eflesh_mean) / (eflesh_std + 1e-8)
-
-    x = x.to(device)
-    h = model.magnetic_encoder(x)       # (B, 512)
-    z = model.projector_magnetic(h)     # (B, 64)
-    return z.cpu().numpy()
-
-
-def process_episodes(input_dir, output_dir, model, dataset_details,
-                     sensor_type, batch_size, device):
+def process_episodes(input_dir, output_dir, model, dataset_details, batch_size, device):
     """
     Process all HDF5 episodes: convert tac0/tac1 → latent z, copy everything else.
-    sensor_type: 'daimon' or 'eflesh'
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -140,14 +113,9 @@ def process_episodes(input_dir, output_dir, model, dataset_details,
         print(f"  No episodes found in {input_dir}")
         return
 
-    if sensor_type == 'daimon':
-        transform = build_daimon_transform(dataset_details)
-    else:
-        stats = dataset_details.get('eflesh_stats', {})
-        eflesh_mean = torch.tensor(stats.get('mean', [0.0] * 15), dtype=torch.float32) if stats else None
-        eflesh_std = torch.tensor(stats.get('std', [1.0] * 15), dtype=torch.float32) if stats else None
+    transform = build_daimon_transform(dataset_details)
 
-    for ep_path in tqdm(episode_files, desc=f"  {sensor_type}"):
+    for ep_path in tqdm(episode_files, desc="  daimon"):
         ep_name = os.path.basename(ep_path)
         out_path = os.path.join(output_dir, ep_name)
 
@@ -162,20 +130,15 @@ def process_episodes(input_dir, output_dir, model, dataset_details,
                 if tac_key not in fin:
                     continue
 
-                raw_data = fin[tac_key][:]  # (N, 384000) or (N, 15)
+                raw_data = fin[tac_key][:]  # (N, 384000)
                 N = raw_data.shape[0]
                 latent_all = np.zeros((N, 64), dtype=np.float32)
 
                 for start in range(0, N, batch_size):
                     end = min(start + batch_size, N)
                     batch_raw = raw_data[start:end]
-
-                    if sensor_type == 'daimon':
-                        depths = np.stack([extract_depth_from_tac(frame) for frame in batch_raw])
-                        latent = encode_daimon_batch(model, depths, transform, device)
-                    else:
-                        latent = encode_eflesh_batch(model, batch_raw, eflesh_mean, eflesh_std, device)
-
+                    depths = np.stack([extract_depth_from_tac(frame) for frame in batch_raw])
+                    latent = encode_daimon_batch(model, depths, transform, device)
                     latent_all[start:end] = latent
 
                 fout.create_dataset(tac_key, data=latent_all)
@@ -212,24 +175,11 @@ def main():
         print(f"         → {args.daimon_output_dir}")
         process_episodes(
             args.daimon_input_dir, args.daimon_output_dir,
-            model, dataset_details, 'daimon', args.batch_size, args.device
+            model, dataset_details, args.batch_size, args.device
         )
         print()
     else:
         print(f"[Daimon] SKIPPED — {args.daimon_input_dir} not found")
-        print()
-
-    # --- eFlesh dataset (15-dim → magnetic_encoder → z) ---
-    if os.path.isdir(args.eflesh_input_dir):
-        print(f"[eFlesh] {args.eflesh_input_dir}")
-        print(f"         → {args.eflesh_output_dir}")
-        process_episodes(
-            args.eflesh_input_dir, args.eflesh_output_dir,
-            model, dataset_details, 'eflesh', args.batch_size, args.device
-        )
-        print()
-    else:
-        print(f"[eFlesh] SKIPPED — {args.eflesh_input_dir} not found")
         print()
 
     print("=" * 60)

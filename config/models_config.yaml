@@ -25,7 +25,7 @@ simclr:
 cross_modal:
   # train options
   seed: 42
-  batch_size: 64
+  batch_size: 256
   start_epoch: 0
   epochs: 100
   pretrain: True
@@ -39,7 +39,7 @@ cross_modal:
   magnetic_hidden_dims: [64, 128, 256]  # MLP hidden layer dims → output auto-matches ResNet
 
   # projection head options
-  projection_dim: 64  # shared latent space dimension for contrastive loss
+  projection_dim: 8  # shared latent space dimension for contrastive loss
 
   # loss options
   optimizer: "Adam"

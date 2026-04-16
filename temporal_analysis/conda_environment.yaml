@@ -1,0 +1,50 @@
+name: cmt
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+  # Python
+  - python=3.10
+
+  # PyTorch (CUDA 12.4)
+  - pytorch::pytorch=2.5.1
+  - pytorch::torchvision=0.20.1
+  - pytorch::pytorch-cuda=12.4
+
+  # 핵심 과학 라이브러리
+  - numpy=1.26.4
+  - scipy=1.10.1
+  - scikit-learn          # t-SNE (analysis_tools.py)
+  - matplotlib
+
+  # 이미지 처리
+  - pillow
+
+  # 설정 및 유틸리티
+  - pyyaml                # yaml 파일 로드 (datasets_config, models_config)
+  - omegaconf=2.3.0       # T3 모델 설정 (models_setup.py)
+  - tqdm                  # 학습 진행 표시
+
+  # 실험 추적
+  - conda-forge::wandb    # 학습 로깅 (train_model.py)
+
+  # Jupyter 환경
+  - jupyter
+  - jupyterlab
+  - ipython
+  - ipykernel
+
+  # pip으로만 설치 가능한 패키지
+  - pip
+  - pip:
+    # SimCLR 구현체 (models_setup.py, utils.py, evaluation.py에서 import)
+    # - SimCLR 모델 (encoder + projection head)
+    # - NT_Xent loss
+    # - get_resnet, LogisticRegression 등
+    - git+https://github.com/Spijkervet/SimCLR.git
+
+    # CTTP 프로젝트 자체 패키지 설치
+    - -e /home/junsung/cross_modal_tactile

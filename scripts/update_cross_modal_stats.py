@@ -24,6 +24,12 @@ def parse_args():
     parser.add_argument("--eflesh_path", type=str, default="processed_data/cross_modal/eflesh")
     parser.add_argument("--config_path", type=str, default="config/datasets_config.yaml")
     parser.add_argument("--dry_run", action="store_true", help="Print stats without modifying yaml")
+    parser.add_argument("--train", nargs="+", default=None,
+                        help="Training tool names (e.g. --train large_ball cylinder). "
+                             "If not set, auto-detects all non-val folders.")
+    parser.add_argument("--val", nargs="+", default=None,
+                        help="Val tool names (e.g. --val large_ball_val cylinder_val). "
+                             "If not set, auto-detects all *_val folders.")
     return parser.parse_args()
 
 
@@ -145,7 +151,18 @@ def main():
     args = parse_args()
 
     print("Scanning processed data...")
-    training_tools, val_tools = discover_tools(args.daimon_path)
+    auto_train, auto_val = discover_tools(args.daimon_path)
+
+    training_tools = args.train if args.train is not None else auto_train
+    val_tools = args.val if args.val is not None else auto_val
+
+    # validate that specified folders exist
+    for t in training_tools + val_tools:
+        d = os.path.join(args.daimon_path, t)
+        e = os.path.join(args.eflesh_path, t)
+        assert os.path.isdir(d), f"Daimon folder not found: {d}"
+        assert os.path.isdir(e), f"eFlesh folder not found: {e}"
+
     print(f"  Training tools: {training_tools}")
     print(f"  Val tools:      {val_tools}")
     print()

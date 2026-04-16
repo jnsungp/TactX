@@ -7,19 +7,27 @@ Usage:
 """
 
 import dataclasses
+import os
 import torch
 import yaml
 from pathlib import Path
 import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
+
+_TACTILE_POLICY_DIR = Path(__file__).resolve().parent.parent
+_TACTILE_BENCHMARK_ROOT = _TACTILE_POLICY_DIR.parent
+# Repo root must be on path so `import tactile_policy.*` (used inside modeling_act) resolves
+sys.path.insert(0, str(_TACTILE_BENCHMARK_ROOT))
 
 import tyro
-from modeling.modeling_act import ACTPolicy
+from tactile_policy.modeling.modeling_act import ACTPolicy
 
-# POLICY_PATH = '/media/ExtHDD/anya/tactile_proj/checkpoints/'
-# CONFIG_PATH = '/home/anya/Workspace/tactile_benchmark/tactile_policy/configs/models/'
-POLICY_PATH = '/home/anyaz/Workspace/tactile/tactile_benchmark/checkpoints/'
-CONFIG_PATH = '/home/anyaz/Workspace/tactile/tactile_benchmark/tactile_policy/configs/models/'
+# Repo-relative defaults (override via env if needed)
+POLICY_PATH = str(
+    Path(os.environ.get("TACTILE_CHECKPOINTS_DIR", str(_TACTILE_BENCHMARK_ROOT / "checkpoints"))).resolve()
+) + os.sep
+CONFIG_PATH = str(
+    Path(os.environ.get("TACTILE_MODEL_CONFIGS_DIR", str(_TACTILE_POLICY_DIR / "configs" / "models"))).resolve()
+) + os.sep
 
 
 class PolicyWrapperTactileImage(torch.nn.Module):
