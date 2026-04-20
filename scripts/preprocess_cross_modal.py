@@ -34,17 +34,17 @@ from tqdm import tqdm
 def parse_args():
     parser = argparse.ArgumentParser(description="Preprocess cross-modal tactile data")
     parser.add_argument("--raw_train", type=str,
-                        default="/home/junsung/ExtHDD/sachin/tactile_data_eflesh_daimon/left_daimon_right_eflesh_cylinder_train",
+                        default="/home/junsung/ExtHDD/sachin/tactile_data_eflesh_daimon/left_daimon_right_eflesh_can_train",
                         help="Raw training data directory")
     parser.add_argument("--raw_val", type=str,
-                        default="/home/junsung/ExtHDD/sachin/tactile_data_eflesh_daimon/left_daimon_right_eflesh_cylinder_val",
+                        default="/home/junsung/ExtHDD/sachin/tactile_data_eflesh_daimon/left_daimon_right_eflesh_can_val",
                         help="Raw validation data directory")
     parser.add_argument("--output_dir", type=str,
                         default="processed_data/cross_modal",
                         help="Output root directory")
-    parser.add_argument("--train_name", type=str, default="cylinder",
+    parser.add_argument("--train_name", type=str, default="can",
                         help="Training tool/object name")
-    parser.add_argument("--val_name", type=str, default="cylinder_val",
+    parser.add_argument("--val_name", type=str, default="can_val",
                         help="Validation tool/object name")
     parser.add_argument("--contact_threshold", type=float, default=0.005,
                         help="Daimon depth mean threshold for contact detection")

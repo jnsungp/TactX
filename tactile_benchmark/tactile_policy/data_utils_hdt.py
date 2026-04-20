@@ -122,27 +122,29 @@ class EpisodicDataset(torch.utils.data.Dataset):
         # First, gather types of embodiments
         for single_hdf_path in self.dataset_paths:
             with h5py.File(single_hdf_path, 'r') as root:
-                norm_stats_dict[root.attrs['embodiment']] = {
+                emb_key = root.attrs.get('embodiment', 'default')
+                norm_stats_dict[emb_key] = {
                     "actions": [],
                     "states": [],
                     "pointclouds": [],
                     "tactile_arrays": []
                 }
-                embodiment_list.append(root.attrs['embodiment'])
+                embodiment_list.append(emb_key)
         print(f"Found embodiments: {norm_stats_dict.keys()}")
 
         for hdf_path in self.dataset_paths:
             with h5py.File(hdf_path, 'r') as root:
+                emb_key = root.attrs.get('embodiment', 'default')
                 state = root['observation.state'][()]
                 action = root['action'][()]
-                norm_stats_dict[root.attrs['embodiment']]["actions"].append(torch.from_numpy(action))
-                norm_stats_dict[root.attrs['embodiment']]["states"].append(torch.from_numpy(state))
+                norm_stats_dict[emb_key]["actions"].append(torch.from_numpy(action))
+                norm_stats_dict[emb_key]["states"].append(torch.from_numpy(state))
                 # Collect tactile arrays only when modality is 'array'
                 if self.tactile_modality == 'array':
                     for tactile_name in self.tactile_names:
                         if f'observation.{tactile_name}' in root:
                             tactile_array = root[f'observation.{tactile_name}'][()]
-                            norm_stats_dict[root.attrs['embodiment']]["tactile_arrays"].append(torch.from_numpy(tactile_array))
+                            norm_stats_dict[emb_key]["tactile_arrays"].append(torch.from_numpy(tactile_array))
                
 
         SAME_NORMALIZATION = True
@@ -333,12 +335,12 @@ class EpisodicDataset(torch.utils.data.Dataset):
         cur_pointcloud = None
 
         if not self.load_hdf_to_cpu:
-            lang_instruction = root.attrs['description']
-            embodiment = root.attrs['embodiment']
+            lang_instruction = root.attrs.get('description', '')
+            embodiment = root.attrs.get('embodiment', 'default')
             root.close()
         else:
-            lang_instruction = root['attrs']['description']
-            embodiment = root['attrs']['embodiment']
+            lang_instruction = root['attrs']['description'] if 'attrs' in root and 'description' in root['attrs'] else ''
+            embodiment = root['attrs']['embodiment'] if 'attrs' in root and 'embodiment' in root['attrs'] else 'default'
 
         if "human" in embodiment:
             SLOW_DOWN_FACTOR = self.slow_down_factor

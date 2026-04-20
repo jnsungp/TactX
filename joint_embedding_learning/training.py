@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 import numpy as np
 import random
 import argparse
@@ -10,6 +11,36 @@ from joint_embedding_learning.utils.losses import loss_vector_embedding
 from joint_embedding_learning.utils.models_setup import get_model
 
 from joint_embedding_learning.barlow_twins.barlow import adjust_learning_rate
+
+
+def compute_embedding_metrics(z_i, z_j):
+    """Compute embedding-quality metrics on a batch of paired projections.
+
+    Args:
+        z_i, z_j: (B, D) projection-head outputs from the two modalities. Diagonal pairs
+            (z_i[k], z_j[k]) are positives; off-diagonal cross-modal pairs are negatives.
+
+    Returns:
+        dict with pos/neg cosine sim mean+std, gap, and alignment (||z_i - z_j||^2 mean).
+    """
+    z_i_n = F.normalize(z_i, dim=1)
+    z_j_n = F.normalize(z_j, dim=1)
+    sim = z_i_n @ z_j_n.t()                                # (B, B)
+    B = sim.shape[0]
+    eye = torch.eye(B, dtype=torch.bool, device=sim.device)
+    pos = sim[eye]                                         # (B,)
+    neg = sim[~eye]                                        # (B*(B-1),)
+    alignment = (z_i_n - z_j_n).pow(2).sum(dim=1).mean()
+    pos_std = pos.std(unbiased=False) if B > 1 else torch.zeros((), device=sim.device)
+    neg_std = neg.std(unbiased=False) if neg.numel() > 1 else torch.zeros((), device=sim.device)
+    return {
+        'pos_cos_mean': pos.mean().item(),
+        'pos_cos_std' : pos_std.item(),
+        'neg_cos_mean': neg.mean().item(),
+        'neg_cos_std' : neg_std.item(),
+        'gap'         : (pos.mean() - neg.mean()).item(),
+        'alignment'   : alignment.item(),
+    }
 
 def train_step(args, train_loaders, model_name, model, criterion, optimizer, scaler, wandb):
     loss_epoch = 0
@@ -47,12 +78,23 @@ def train_step(args, train_loaders, model_name, model, criterion, optimizer, sca
         
             with torch.no_grad():
                 loss_vector_0 = loss_vector_embedding(h_i, h_j)
+                m = compute_embedding_metrics(z_i, z_j)
 
                 if step % 50 == 0:
                     print(f"Step [{step}/{len(loader)}]\t Loss: {loss.item()}")
                     print(f"Step [{step}/{len(loader)}]\t Loss Vector: {loss_vector_0.item()}")
 
-                wandb.log({"Loss_train/Model_Loss_batch": loss.item(), "Loss_train/embedding_diff_batch": loss_vector_0.item(), "Epoch_batch": args.current_epoch})
+                wandb.log({
+                    "Loss_train/Model_Loss_batch": loss.item(),
+                    "Loss_train/embedding_diff_batch": loss_vector_0.item(),
+                    "Metric_train/pos_cos_mean": m['pos_cos_mean'],
+                    "Metric_train/pos_cos_std" : m['pos_cos_std'],
+                    "Metric_train/neg_cos_mean": m['neg_cos_mean'],
+                    "Metric_train/neg_cos_std" : m['neg_cos_std'],
+                    "Metric_train/gap"         : m['gap'],
+                    "Metric_train/alignment"   : m['alignment'],
+                    "Epoch_batch": args.current_epoch,
+                })
                 args.global_step += 1
 
                 loss_epoch += loss.item()
@@ -78,12 +120,23 @@ def validation_step(args, val_loaders, model, criterion, wandb, val_name = "Val"
             h_i, h_j, z_i, z_j = model(x_i, x_j)
             loss = criterion(z_i, z_j)
             loss_vector_0 = loss_vector_embedding(h_i, h_j)
+            m = compute_embedding_metrics(z_i, z_j)
 
             if step % 50 == 0:
                 print(f"Step [{step}/{len(val_loader)}]\t" + val_name + "Loss: {loss.item()}")
                 print(f"Step [{step}/{len(val_loader)}]\t" + val_name + "Loss Vector: {loss_vector_0.item()}")
 
-            wandb.log({"Loss_" + val_name + "/Model_Loss_batch": loss.item(), "Loss_"+ val_name + "/embedding_diff_batch": loss_vector_0.item(), "Epoch": args.current_epoch})
+            wandb.log({
+                "Loss_" + val_name + "/Model_Loss_batch": loss.item(),
+                "Loss_" + val_name + "/embedding_diff_batch": loss_vector_0.item(),
+                f"Metric_{val_name}/pos_cos_mean": m['pos_cos_mean'],
+                f"Metric_{val_name}/pos_cos_std" : m['pos_cos_std'],
+                f"Metric_{val_name}/neg_cos_mean": m['neg_cos_mean'],
+                f"Metric_{val_name}/neg_cos_std" : m['neg_cos_std'],
+                f"Metric_{val_name}/gap"         : m['gap'],
+                f"Metric_{val_name}/alignment"   : m['alignment'],
+                "Epoch": args.current_epoch,
+            })
 
             loss_epoch += loss.item()
             loss_vector += loss_vector_0.item()
@@ -101,7 +154,7 @@ def train(train_datasets, validation_datasets, dataset_name, dataset_details, mo
     model_parser.add_argument("--device", default=device, type=str, help="Device to run the model on")
     model_parser.add_argument("--run_name", type=str, default=run_name, help='Name of the run')
     model_parser.add_argument("--debug", action='store_true', help='Debug mode')
-    args = model_parser.parse_args()
+    args = model_parser.parse_args([])
 
     for key, value in model_details.items():
         setattr(args, key, value)

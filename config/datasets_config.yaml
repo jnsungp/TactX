@@ -1,8 +1,8 @@
 # ============================================================
 # Cross-Modal Dataset: Daimon (depth from s0) + eFlesh (magnetic)
-# 1 objects: cylinder (6568) = 6568 frames
+# 5 objects: can (3312), cylinder (6568), large_ball (6679), pen (4035), small_ball (10042) = 30636 frames
 # Contact filter: both sensors must be in contact
-# Stats computed from all 1 training objects combined
+# Stats computed from all 5 training objects combined
 # ============================================================
 dataset_cross_modal:
   dataset_type: 'cross_modal'
@@ -18,24 +18,32 @@ dataset_cross_modal:
   daimon_channels: 3
 
   daimon_stats:
-    mean: [0.134663, 0.134663, 0.134663]
-    std: [0.300324, 0.300324, 0.300324]
+    mean: [0.126311, 0.126311, 0.126311]
+    std: [0.324535, 0.324535, 0.324535]
 
   eflesh_stats:
-    mean: [93.393188, -1016.577698, -220.003250, -303.440826, -354.737030, 936.931030, 342.367950, 520.851562, -1558.643677, -290.453156, -70.092865, -28.904160, -843.458679, 99.518639, -106.165939]
-    std: [108.624695, 442.273163, 321.862000, 191.764038, 198.478561, 564.907288, 197.362946, 207.386520, 758.231201, 256.580872, 303.154694, 212.113861, 392.785767, 243.749603, 169.661346]
+    mean: [137.958664, -899.769592, -210.221817, -264.862946, -290.407227, 797.167053, 324.655396, 587.242126, -1465.970825, -333.126312, -185.841537, 9.572333, -783.616577, 80.624771, -121.709534]
+    std: [216.976532, 664.938538, 319.759247, 289.498688, 301.617401, 605.135986, 291.086273, 374.469269, 1039.518433, 381.615387, 491.967896, 219.396225, 571.922791, 206.743469, 209.363998]
 
   daimon_path: 'processed_data/cross_modal/daimon'
   eflesh_path: 'processed_data/cross_modal/eflesh'
 
-  n_classes_training: 1
+  n_classes_training: 5
   n_classes_test: 0
 
   tools:
     training_tools:
+      - 'can'
       - 'cylinder'
+      - 'large_ball'
+      - 'pen'
+      - 'small_ball'
 
     val_tools:
+      - 'can_val'
       - 'cylinder_val'
+      - 'large_ball_val'
+      - 'pen_val'
+      - 'small_ball_val'
 
     test_tools: []

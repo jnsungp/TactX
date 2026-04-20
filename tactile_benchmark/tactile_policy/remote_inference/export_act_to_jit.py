@@ -3,7 +3,7 @@
 Export ACT checkpoint to TorchScript for deployment.
 
 Usage:
-    python export_act_to_jit.py --policy_name my_experiment --policy_config act_eflesh
+    python export_act_to_jit.py --policy_name spam_daimon_latent --policy_config act_cross_modal
 """
 
 import dataclasses

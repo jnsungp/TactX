@@ -4,7 +4,7 @@ Offline inference for ACT policy using checkpoint directly (no TorchScript neede
 
 Usage:
     python tactile_policy/remote_inference/offline_inference.py \
-        --checkpoint_path /media/ExtHDD/anya/tactile_proj/checkpoints/pnp_force_ckpt/policy_last.ckpt \
+        --checkpoint_path /home//Workspace/tactile_proj/checkpoints/pnp_force_ckpt/policy_last.ckpt \
         --config_path /home/anya/Workspace/tactile_benchmark/tactile_policy/configs/models/act_force.yaml \
         --norm_stats_path /media/ExtHDD/anya/tactile_proj/checkpoints/pnp_force_ckpt/dataset_stats.pkl \
         --test_hdf_path data/recordings/processed/pnp_flexi_val/episode_0000.hdf5 \

@@ -30,13 +30,13 @@ from joint_embedding_learning.utils.models_setup import get_model
 def parse_args():
     parser = argparse.ArgumentParser(description="Convert tac0/tac1 to latent z using trained CrossModalCLR")
     parser.add_argument("--checkpoint_dir", type=str,
-                        default="checkpoints/cross_modal/cross_modal/dataset_cross_modal_run_20260411_220509",
+                        default="checkpoints/cross_modal/cross_modal/dataset_cross_modal_run_sweep_20260419_155206_lr1e-4_tau0.03_bs64_pd16",
                         help="Path to checkpoint directory containing model.pt and yaml configs")
     parser.add_argument("--daimon_input_dir", type=str,
-                        default="/home/junsung/cross_modal_tactile/dai_dai_small_ball/processed",
+                        default="/home/junsung/cross_modal_tactile/tactile_benchmark/data/recordings/processed/pnp_tennis_ball_unwrapped_val",
                         help="Directory with daimon HDF5 episodes (tac0/tac1 shape: N×384000)")
     parser.add_argument("--daimon_output_dir", type=str,
-                        default="/home/junsung/cross_modal_tactile/dai_dai_small_ball/latent",
+                        default="/home/junsung/cross_modal_tactile/tactile_benchmark/data/recordings/processed/pnp_tennis_ball_unwrapped_latent_val",
                         help="Output directory for daimon latent episodes")
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--batch_size", type=int, default=64)
@@ -87,7 +87,7 @@ def encode_daimon_batch(model, batch, transform, device):
     """
     Encode a batch of daimon depth frames to latent z.
     batch: (B, 240, 320) numpy float32
-    Returns: (B, 64) numpy float32
+    Returns: (B, projection_dim) numpy float32
     """
     tensors = []
     for frame in batch:
@@ -102,7 +102,7 @@ def encode_daimon_batch(model, batch, transform, device):
     return z.cpu().numpy()
 
 
-def process_episodes(input_dir, output_dir, model, dataset_details, batch_size, device):
+def process_episodes(input_dir, output_dir, model, dataset_details, batch_size, device, projection_dim=64):
     """
     Process all HDF5 episodes: convert tac0/tac1 → latent z, copy everything else.
     """
@@ -132,7 +132,7 @@ def process_episodes(input_dir, output_dir, model, dataset_details, batch_size, 
 
                 raw_data = fin[tac_key][:]  # (N, 384000)
                 N = raw_data.shape[0]
-                latent_all = np.zeros((N, 64), dtype=np.float32)
+                latent_all = np.zeros((N, projection_dim), dtype=np.float32)
 
                 for start in range(0, N, batch_size):
                     end = min(start + batch_size, N)
@@ -143,7 +143,7 @@ def process_episodes(input_dir, output_dir, model, dataset_details, batch_size, 
 
                 fout.create_dataset(tac_key, data=latent_all)
 
-        tqdm.write(f"    {ep_name}: {tac_key} {raw_data.shape} → (N, 64)")
+        tqdm.write(f"    {ep_name}: {tac_key} {raw_data.shape} → (N, {projection_dim})")
 
 
 def main():
@@ -157,7 +157,7 @@ def main():
         )
 
     print("=" * 60)
-    print("Convert tac0/tac1 → Latent Space z (64-dim)")
+    print("Convert tac0/tac1 → Latent Space z")
     print("=" * 60)
     print(f"  Checkpoint : {checkpoint_dir}")
     print(f"  Device     : {args.device}")
@@ -175,7 +175,8 @@ def main():
         print(f"         → {args.daimon_output_dir}")
         process_episodes(
             args.daimon_input_dir, args.daimon_output_dir,
-            model, dataset_details, args.batch_size, args.device
+            model, dataset_details, args.batch_size, args.device,
+            projection_dim=model_details['projection_dim'],
         )
         print()
     else:

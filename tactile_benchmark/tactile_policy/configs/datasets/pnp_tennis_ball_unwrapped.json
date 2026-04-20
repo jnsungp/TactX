@@ -1,0 +1,4 @@
+{
+    "train": ["pnp_tennis_ball_unwrapped"],
+    "val": ["pnp_tennis_ball_unwrapped_val"]
+}

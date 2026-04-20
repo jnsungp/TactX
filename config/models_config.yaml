@@ -39,7 +39,7 @@ cross_modal:
   magnetic_hidden_dims: [64, 128, 256]  # MLP hidden layer dims → output auto-matches ResNet
 
   # projection head options
-  projection_dim: 8  # shared latent space dimension for contrastive loss
+  projection_dim: 16  # shared latent space dimension for contrastive loss
 
   # loss options
   optimizer: "Adam"
