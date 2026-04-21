@@ -25,11 +25,11 @@ simclr:
 cross_modal:
   # train options
   seed: 42
-  batch_size: 256
+  batch_size: 64
   start_epoch: 0
   epochs: 100
   pretrain: True
-  learning_rate: 0.0003
+  learning_rate: 0.0001
 
   # image encoder (Daimon) options
   resnet: "resnet18"  # ResNet-18 for 320x240 tactile images (output: 512-dim)
@@ -43,8 +43,15 @@ cross_modal:
 
   # loss options
   optimizer: "Adam"
-  weight_decay: 1.0e-6
-  temperature: 0.5  # NT-Xent temperature
+  weight_decay: 1.0e-4
+  temperature: 0.03  # NT-Xent / CWCL temperature
+
+  # cross-modal loss selection: 'infonce' (default, NT-Xent) or 'cwcl'
+  # CWCL uses continuous soft weights w_ij = exp(-|f_i - f_j| / cwcl_sigma)
+  # within the same tool (and same episode if cwcl_same_episode_only is true).
+  loss: 'cwcl'
+  cwcl_sigma: 5.0                 # frame-distance decay (larger -> wider soft positives)
+  cwcl_same_episode_only: true    # if false, decay applies across episodes of same tool
 
   # logistic regression options
   logistic_batch_size: 256

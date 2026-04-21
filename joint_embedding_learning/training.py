@@ -7,7 +7,7 @@ from tqdm import tqdm
 from torchvision.utils import make_grid
 from joint_embedding_learning.data.datasets import get_all_contrastive_datasets
 from joint_embedding_learning.utils.utils import load_optimizer, save_model, get_loss
-from joint_embedding_learning.utils.losses import loss_vector_embedding
+from joint_embedding_learning.utils.losses import loss_vector_embedding, cwcl_weight_stats
 from joint_embedding_learning.utils.models_setup import get_model
 
 from joint_embedding_learning.barlow_twins.barlow import adjust_learning_rate
@@ -42,23 +42,47 @@ def compute_embedding_metrics(z_i, z_j):
         'alignment'   : alignment.item(),
     }
 
+def _use_cwcl(args, model_name):
+    return model_name == 'cross_modal' and getattr(args, 'loss', 'infonce') == 'cwcl'
+
+
+def _compute_loss(args, model_name, criterion, z_i, z_j, meta):
+    """Dispatch loss call depending on whether CWCL (needs meta) or classic InfoNCE/Barlow."""
+    if _use_cwcl(args, model_name):
+        return criterion(z_i, z_j, meta)
+    return criterion(z_i, z_j)
+
+
+def _prepare_meta(labels, device, model_name):
+    """Move cross_modal (tool, episode, frame) labels to device.
+
+    Returns a tuple of three (B,) long tensors, or None for non cross_modal datasets.
+    """
+    if model_name != 'cross_modal' or labels is None:
+        return None
+    if not isinstance(labels, (list, tuple)) or len(labels) < 3:
+        return None
+    tool_ids, episode_ids, frame_ids = labels[0], labels[1], labels[2]
+    return (tool_ids.to(device), episode_ids.to(device), frame_ids.to(device))
+
+
 def train_step(args, train_loaders, model_name, model, criterion, optimizer, scaler, wandb):
     loss_epoch = 0
     loss_vector = 0
     count = 0
     loader_len = len(train_loaders[0]) * len(train_loaders)
     step_lr = args.current_epoch * loader_len
+    use_cwcl = _use_cwcl(args, model_name)
     for loader in train_loaders:
-        for step, ((x_i, x_j), _) in tqdm(enumerate(loader)):
+        for step, ((x_i, x_j), labels) in tqdm(enumerate(loader)):
             x_i = x_i.to(args.device)
             x_j = x_j.to(args.device)
+            meta = _prepare_meta(labels, args.device, model_name)
 
             if args.optimizer == "Adam":
-                # positive pair, with encoding
-                # import pdb; pdb.set_trace()
                 optimizer.zero_grad()
                 h_i, h_j, z_i, z_j = model(x_i, x_j)
-                loss = criterion(z_i, z_j)
+                loss = _compute_loss(args, model_name, criterion, z_i, z_j, meta)
                 loss.backward()
                 optimizer.step()
 
@@ -66,16 +90,15 @@ def train_step(args, train_loaders, model_name, model, criterion, optimizer, sca
                 adjust_learning_rate(args.epochs, args.batch_size, args.learning_rate_weights, args.learning_rate_biases, optimizer, loader_len, step_lr)
                 optimizer.zero_grad()
                 with torch.cuda.amp.autocast():
-                    # positive pair, with encoding
                     h_i, h_j, z_i, z_j = model(x_i, x_j)
-                    loss = criterion(z_i, z_j)
+                    loss = _compute_loss(args, model_name, criterion, z_i, z_j, meta)
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
-                
+
             else:
                 raise NotImplementedError
-        
+
             with torch.no_grad():
                 loss_vector_0 = loss_vector_embedding(h_i, h_j)
                 m = compute_embedding_metrics(z_i, z_j)
@@ -84,7 +107,7 @@ def train_step(args, train_loaders, model_name, model, criterion, optimizer, sca
                     print(f"Step [{step}/{len(loader)}]\t Loss: {loss.item()}")
                     print(f"Step [{step}/{len(loader)}]\t Loss Vector: {loss_vector_0.item()}")
 
-                wandb.log({
+                log_dict = {
                     "Loss_train/Model_Loss_batch": loss.item(),
                     "Loss_train/embedding_diff_batch": loss_vector_0.item(),
                     "Metric_train/pos_cos_mean": m['pos_cos_mean'],
@@ -94,54 +117,66 @@ def train_step(args, train_loaders, model_name, model, criterion, optimizer, sca
                     "Metric_train/gap"         : m['gap'],
                     "Metric_train/alignment"   : m['alignment'],
                     "Epoch_batch": args.current_epoch,
-                })
+                }
+                if use_cwcl and meta is not None:
+                    stats = cwcl_weight_stats(
+                        meta[0], meta[1], meta[2],
+                        sigma=getattr(args, 'cwcl_sigma', 5.0),
+                        same_episode_only=getattr(args, 'cwcl_same_episode_only', True),
+                    )
+                    for k, v in stats.items():
+                        log_dict[f"Metric_train/{k}"] = v
+                wandb.log(log_dict)
                 args.global_step += 1
 
                 loss_epoch += loss.item()
                 loss_vector += loss_vector_0.item()
                 count += 1
                 step_lr += 1
-    
+
     loss_epoch /= count
     loss_vector /= count
     return loss_epoch, loss_vector, x_i, x_j
 
-def validation_step(args, val_loaders, model, criterion, wandb, val_name = "Val"):
+def validation_step(args, val_loaders, model, criterion, wandb, val_name = "Val", model_name='cross_modal'):
     loss_epoch = 0
     loss_vector = 0
     count = 0
 
-    for val_loader in val_loaders:
-        for step, ((x_i, x_j), _) in tqdm(enumerate(val_loader)):
-            x_i = x_i.to(args.device)
-            x_j = x_j.to(args.device)
+    model.eval()
+    with torch.no_grad():
+        for val_loader in val_loaders:
+            for step, ((x_i, x_j), labels) in tqdm(enumerate(val_loader)):
+                x_i = x_i.to(args.device)
+                x_j = x_j.to(args.device)
+                meta = _prepare_meta(labels, args.device, model_name)
 
-            # positive pair, with encoding
-            h_i, h_j, z_i, z_j = model(x_i, x_j)
-            loss = criterion(z_i, z_j)
-            loss_vector_0 = loss_vector_embedding(h_i, h_j)
-            m = compute_embedding_metrics(z_i, z_j)
+                h_i, h_j, z_i, z_j = model(x_i, x_j)
+                loss = _compute_loss(args, model_name, criterion, z_i, z_j, meta)
+                loss_vector_0 = loss_vector_embedding(h_i, h_j)
+                m = compute_embedding_metrics(z_i, z_j)
 
-            if step % 50 == 0:
-                print(f"Step [{step}/{len(val_loader)}]\t" + val_name + "Loss: {loss.item()}")
-                print(f"Step [{step}/{len(val_loader)}]\t" + val_name + "Loss Vector: {loss_vector_0.item()}")
+                if step % 50 == 0:
+                    print(f"Step [{step}/{len(val_loader)}]\t" + val_name + "Loss: {loss.item()}")
+                    print(f"Step [{step}/{len(val_loader)}]\t" + val_name + "Loss Vector: {loss_vector_0.item()}")
 
-            wandb.log({
-                "Loss_" + val_name + "/Model_Loss_batch": loss.item(),
-                "Loss_" + val_name + "/embedding_diff_batch": loss_vector_0.item(),
-                f"Metric_{val_name}/pos_cos_mean": m['pos_cos_mean'],
-                f"Metric_{val_name}/pos_cos_std" : m['pos_cos_std'],
-                f"Metric_{val_name}/neg_cos_mean": m['neg_cos_mean'],
-                f"Metric_{val_name}/neg_cos_std" : m['neg_cos_std'],
-                f"Metric_{val_name}/gap"         : m['gap'],
-                f"Metric_{val_name}/alignment"   : m['alignment'],
-                "Epoch": args.current_epoch,
-            })
+                wandb.log({
+                    "Loss_" + val_name + "/Model_Loss_batch": loss.item(),
+                    "Loss_" + val_name + "/embedding_diff_batch": loss_vector_0.item(),
+                    f"Metric_{val_name}/pos_cos_mean": m['pos_cos_mean'],
+                    f"Metric_{val_name}/pos_cos_std" : m['pos_cos_std'],
+                    f"Metric_{val_name}/neg_cos_mean": m['neg_cos_mean'],
+                    f"Metric_{val_name}/neg_cos_std" : m['neg_cos_std'],
+                    f"Metric_{val_name}/gap"         : m['gap'],
+                    f"Metric_{val_name}/alignment"   : m['alignment'],
+                    "Epoch": args.current_epoch,
+                })
 
-            loss_epoch += loss.item()
-            loss_vector += loss_vector_0.item()
-            count += 1
+                loss_epoch += loss.item()
+                loss_vector += loss_vector_0.item()
+                count += 1
 
+    model.train()
     loss_epoch /= count
     loss_vector /= count
     return loss_epoch, loss_vector, x_i, x_j
@@ -183,6 +218,11 @@ def train(train_datasets, validation_datasets, dataset_name, dataset_details, mo
         print('Temperature:', args.temperature)
         print('Magnetic Input Dim:', args.magnetic_input_dim)
         print('Magnetic Hidden Dims:', args.magnetic_hidden_dims)
+        loss_type = getattr(args, 'loss', 'infonce')
+        print('Loss:', loss_type)
+        if loss_type == 'cwcl':
+            print('CWCL sigma:', getattr(args, 'cwcl_sigma', 5.0))
+            print('CWCL same_episode_only:', getattr(args, 'cwcl_same_episode_only', True))
     
     train_loaders = []
     for dataset in train_datasets:
@@ -231,7 +271,7 @@ def train(train_datasets, validation_datasets, dataset_name, dataset_details, mo
                     wandb.log({"Image": [wandb.Image(grid_i), wandb.Image(grid_j)], "Epoch": epoch})
 
             for key, val_loader in val_loaders_array.items():
-                val_loss_epoch, val_loss_vector, x_i, x_j = validation_step(args, val_loader, model, criterion, wandb, key)
+                val_loss_epoch, val_loss_vector, x_i, x_j = validation_step(args, val_loader, model, criterion, wandb, key, model_name=model_name)
                 wandb.log({"Loss_" + key + "/Model_Loss": val_loss_epoch, "Loss_" + key + "/embedding_diff": val_loss_vector, "Epoch": epoch})
 
             args.current_epoch += 1

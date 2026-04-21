@@ -5,6 +5,7 @@ from simclr.modules import LARS as LARS_simclr
 import yaml
 from simclr.modules import NT_Xent
 from joint_embedding_learning.barlow_twins.barlow import BarlowLoss, LARS
+from joint_embedding_learning.utils.losses import CWCL
 
 
 def load_optimizer(args, model):
@@ -38,8 +39,17 @@ def get_loss(args, model_name):
     elif model_name == 'barlow_twins':
         criterion = BarlowLoss(args.projector, args.batch_size, args.lambd, args.device)
     elif model_name == 'cross_modal':
-        # Cross-modal contrastive learning uses NT-Xent loss (same as SimCLR)
-        criterion = NT_Xent(args.batch_size, args.temperature, 1)
+        loss_type = getattr(args, 'loss', 'infonce')
+        if loss_type == 'cwcl':
+            criterion = CWCL(
+                temperature=args.temperature,
+                sigma=getattr(args, 'cwcl_sigma', 5.0),
+                same_episode_only=getattr(args, 'cwcl_same_episode_only', True),
+            )
+        elif loss_type == 'infonce':
+            criterion = NT_Xent(args.batch_size, args.temperature, 1)
+        else:
+            raise ValueError(f"Unknown loss '{loss_type}' for cross_modal (expected 'infonce' or 'cwcl')")
     else:
         raise ValueError(f"Model {model_name} not found")
     return criterion

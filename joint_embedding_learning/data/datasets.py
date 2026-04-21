@@ -6,8 +6,20 @@ from simclr.modules.transformations import TransformsSimCLR
 import torch
 import glob as glob
 import os
+import re
 import yaml
 import csv
+
+
+_EP_FR_RE = re.compile(r'ep(\d+)_fr(\d+)\.pt$')
+
+
+def _parse_ep_fr(path):
+    """Parse 'ep0000_fr0032.pt' style filenames. Returns (episode_id, frame_id) or (-1, -1)."""
+    m = _EP_FR_RE.search(os.path.basename(path))
+    if m is None:
+        return -1, -1
+    return int(m.group(1)), int(m.group(2))
 
 class CMTJESimCLR(Dataset):
     def __init__(self, root_dir_bubbles, root_dir_gelslim, selected_tools, bubbles_transforms=None, gelslim_transform=None, angle_start = 0, angle_skip = 1, side = 'both', device = 'cpu', padding = False, difference = True):
@@ -182,6 +194,8 @@ class CrossModalDataset(Dataset):
         self.daimon_files = []
         self.eflesh_files = []
         self.tool_per_sample = []
+        self.episode_per_sample = []
+        self.frame_per_sample = []
 
         for i, tool in enumerate(selected_tools):
             daimon_tool_files = sorted(
@@ -196,6 +210,10 @@ class CrossModalDataset(Dataset):
             self.daimon_files += daimon_tool_files
             self.eflesh_files += eflesh_tool_files
             self.tool_per_sample += [i] * len(daimon_tool_files)
+            for f in daimon_tool_files:
+                ep, fr = _parse_ep_fr(f)
+                self.episode_per_sample.append(ep)
+                self.frame_per_sample.append(fr)
 
         self.daimon_transforms = daimon_transforms
         self.eflesh_mean = torch.tensor(eflesh_mean, dtype=torch.float32) if eflesh_mean is not None else None
@@ -225,9 +243,11 @@ class CrossModalDataset(Dataset):
         if self.eflesh_mean is not None and self.eflesh_std is not None:
             eflesh_vec = (eflesh_vec - self.eflesh_mean.to(eflesh_vec.device)) / (self.eflesh_std.to(eflesh_vec.device) + 1e-8)
 
-        label = torch.tensor(self.tool_per_sample[idx]).to(self.device)
+        tool_id = torch.tensor(self.tool_per_sample[idx], dtype=torch.long).to(self.device)
+        episode_id = torch.tensor(self.episode_per_sample[idx], dtype=torch.long).to(self.device)
+        frame_id = torch.tensor(self.frame_per_sample[idx], dtype=torch.long).to(self.device)
 
-        return [daimon_img, eflesh_vec], [label]
+        return [daimon_img, eflesh_vec], [tool_id, episode_id, frame_id]
 
 
 def get_cross_modal_datasets(dataset_name, dataset_details, data_split='train', device='cpu'):

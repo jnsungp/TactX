@@ -1,4 +1,7 @@
-import torch 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
 
 def loss_vector_embedding(z_i, z_j):
     loss = torch.nn.functional.mse_loss(z_i, z_j)
@@ -7,3 +10,127 @@ def loss_vector_embedding(z_i, z_j):
 def loss_vector_similarity(h_i, h_j):
     loss = torch.nn.functional.cosine_similarity(h_i, h_j)
     return loss
+
+
+class CWCL(nn.Module):
+    """Continuous Weighted Contrastive Loss.
+
+    Generalizes NT-Xent to soft labels: instead of treating only the diagonal
+    as positives, each off-diagonal (i, j) carries a continuous weight
+    w_ij in [0, 1] reflecting how similar samples i and j are.
+
+    Weight definition used here (episode + frame distance based):
+        - same tool AND same episode: w_ij = exp(-|f_i - f_j| / sigma)
+        - otherwise: 0
+        - diagonal forced to 1
+    (If same_episode_only=False, the episode mask is dropped and the decay
+    applies within the same tool.)
+
+    Loss form (symmetric, NT-Xent style):
+        L_i->j = -sum_k softmax_w(ik) * log softmax(sim(z_i, z_j) / tau)_ik
+    and averaged with the j->i direction.
+    """
+
+    def __init__(self, temperature=0.5, sigma=5.0, same_episode_only=True):
+        super().__init__()
+        self.temperature = float(temperature)
+        self.sigma = float(sigma)
+        self.same_episode_only = bool(same_episode_only)
+
+    @torch.no_grad()
+    def compute_weights(self, tool_ids, episode_ids, frame_ids):
+        """Build (B, B) weight matrix from per-sample metadata.
+
+        Args:
+            tool_ids: (B,) long
+            episode_ids: (B,) long
+            frame_ids: (B,) long
+        Returns:
+            W: (B, B) float tensor on the same device, values in [0, 1].
+        """
+        tool_ids = tool_ids.view(-1)
+        episode_ids = episode_ids.view(-1)
+        frame_ids = frame_ids.view(-1).float()
+
+        same_tool = tool_ids.unsqueeze(0) == tool_ids.unsqueeze(1)
+        mask = same_tool
+        if self.same_episode_only:
+            same_ep = episode_ids.unsqueeze(0) == episode_ids.unsqueeze(1)
+            mask = mask & same_ep
+
+        dfr = (frame_ids.unsqueeze(0) - frame_ids.unsqueeze(1)).abs()
+        W = torch.exp(-dfr / max(self.sigma, 1e-6))
+        W = W * mask.float()
+        # Ensure self-pair is always positive with weight 1.
+        B = W.shape[0]
+        eye = torch.eye(B, dtype=torch.bool, device=W.device)
+        W = W.masked_fill(eye, 1.0)
+        return W
+
+    @staticmethod
+    def _soft_ce(logits, W):
+        """Row-wise soft cross-entropy.
+
+        logits: (B, B) similarity logits (scaled by 1/tau)
+        W: (B, B) non-negative row weights (already self-included)
+        """
+        log_prob = F.log_softmax(logits, dim=1)
+        row_sum = W.sum(dim=1, keepdim=True).clamp_min(1e-8)
+        W_norm = W / row_sum
+        per_row = -(W_norm * log_prob).sum(dim=1)
+        return per_row.mean()
+
+    def forward(self, z_i, z_j, meta):
+        """
+        Args:
+            z_i: (B, D) projections from modality A (e.g., Daimon image).
+            z_j: (B, D) projections from modality B (e.g., eFlesh magnetic).
+            meta: tuple of (tool_ids, episode_ids, frame_ids), each (B,) long.
+        Returns:
+            scalar loss.
+        """
+        tool_ids, episode_ids, frame_ids = meta
+        z_i_n = F.normalize(z_i, dim=1)
+        z_j_n = F.normalize(z_j, dim=1)
+
+        logits_ij = (z_i_n @ z_j_n.t()) / self.temperature  # anchor i -> j
+        logits_ji = (z_j_n @ z_i_n.t()) / self.temperature  # anchor j -> i
+
+        W = self.compute_weights(tool_ids, episode_ids, frame_ids)
+
+        loss_ij = self._soft_ce(logits_ij, W)
+        loss_ji = self._soft_ce(logits_ji, W.t())
+        return 0.5 * (loss_ij + loss_ji)
+
+
+@torch.no_grad()
+def cwcl_weight_stats(tool_ids, episode_ids, frame_ids, sigma=5.0, same_episode_only=True):
+    """Diagnostic: report W mass / effective positives per row.
+
+    Returns dict with floats.
+    """
+    B = tool_ids.shape[0]
+    tool_ids = tool_ids.view(-1)
+    episode_ids = episode_ids.view(-1)
+    frame_ids = frame_ids.view(-1).float()
+
+    same_tool = tool_ids.unsqueeze(0) == tool_ids.unsqueeze(1)
+    mask = same_tool
+    if same_episode_only:
+        same_ep = episode_ids.unsqueeze(0) == episode_ids.unsqueeze(1)
+        mask = mask & same_ep
+
+    dfr = (frame_ids.unsqueeze(0) - frame_ids.unsqueeze(1)).abs()
+    W = torch.exp(-dfr / max(float(sigma), 1e-6)) * mask.float()
+    eye = torch.eye(B, dtype=torch.bool, device=W.device)
+    W = W.masked_fill(eye, 1.0)
+
+    row_mass = W.sum(dim=1)                  # includes the self weight (=1)
+    off_mass = row_mass - 1.0                # soft positives beyond self
+    # Effective number of positives per row ~ (sum w)^2 / sum w^2
+    eff_pos = (row_mass.pow(2) / W.pow(2).sum(dim=1).clamp_min(1e-8))
+    return {
+        'cwcl_row_mass_mean': row_mass.mean().item(),
+        'cwcl_offdiag_mass_mean': off_mass.mean().item(),
+        'cwcl_effective_pos_mean': eff_pos.mean().item(),
+    }

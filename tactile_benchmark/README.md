@@ -168,6 +168,150 @@ python tactile_policy/main.py \
   --model_cfg act_flexi \
 ```
 
+## Worked example: pnp_tennis_ball (Daimon)
+
+End-to-end pipeline: pre-processed HDF5 → policy. Covers three tactile variants (raw, cross-modal latent, vision-only) and the hyperparameter sweep.
+
+### 1. Pre-processing
+
+**1a. Unwrap 2π action offsets.** The gello teleop agent can record action joints as `state + k*2π`. Undo it (writes to a new folder, non-destructive):
+
+```bash
+python scripts/unwrap_action_2pi.py \
+  --src tactile_benchmark/data/recordings/processed/pnp_tennis_ball \
+  --dst tactile_benchmark/data/recordings/processed/pnp_tennis_ball_unwrapped
+
+python scripts/unwrap_action_2pi.py \
+  --src tactile_benchmark/data/recordings/processed/pnp_tennis_ball_val \
+  --dst tactile_benchmark/data/recordings/processed/pnp_tennis_ball_unwrapped_val
+```
+
+Verify every `|a-s|max` is well below π (typically <0.5):
+```bash
+python -c "
+import h5py, numpy as np
+with h5py.File('tactile_benchmark/data/recordings/processed/pnp_tennis_ball_unwrapped/episode_0000.hdf5') as f:
+    a=f['action'][:, :8]; s=f['observation.state'][:, :8]
+for d in range(8):
+    print(f'  d{d}: |a-s|max={np.abs(a[:,d]-s[:,d]).max():.3f}')"
+```
+
+**1b. (Latent variant only) Generate tactile latents** with the cross-modal CLR encoder:
+
+```bash
+python scripts/convert_tac_to_latent.py \
+  --checkpoint_dir checkpoints/cross_modal/cross_modal/<encoder_run> \
+  --daimon_input_dir  tactile_benchmark/data/recordings/processed/pnp_tennis_ball_unwrapped \
+  --daimon_output_dir tactile_benchmark/data/recordings/processed/pnp_tennis_ball_unwrapped_latent
+
+# Same for val split.
+```
+
+Note: `convert_tac_to_latent.py` currently does **not** copy root HDF5 attributes. Patch the required attrs after conversion:
+```bash
+python -c "
+import h5py, glob
+for d in ['tactile_benchmark/data/recordings/processed/pnp_tennis_ball_unwrapped_latent',
+          'tactile_benchmark/data/recordings/processed/pnp_tennis_ball_unwrapped_latent_val']:
+    for p in sorted(glob.glob(d+'/episode_*.hdf5')):
+        with h5py.File(p,'a') as f:
+            f.attrs['embodiment'] = 'franka'
+            f.attrs['description'] = 'pnp tennis ball daimon latent'"
+```
+
+Also pick a sensor config whose `tactile_dim` matches the encoder's projection. The default [cross_modal_latent.yaml](tactile_policy/configs/sensors/cross_modal_latent.yaml) is 64-d. For a 16-d encoder, use [cross_modal_latent_z16.yaml](tactile_policy/configs/sensors/cross_modal_latent_z16.yaml).
+
+### 2. Configs
+
+Dataset jsons in [tactile_policy/configs/datasets/](tactile_policy/configs/datasets/):
+- `pnp_tennis_ball_unwrapped.json` — raw daimon images
+- `pnp_tennis_ball_unwrapped_latent.json` — 16-d cross-modal latents
+
+Model yamls in [tactile_policy/configs/models/](tactile_policy/configs/models/):
+- `act_daimon_v2.yaml` — raw daimon, `kl_weight: 1`, `lr_backbone: 1e-4`, `chunk_size: 16`
+- `act_cross_modal_pnp_z16.yaml` — 16-d latent tactile
+- `act_daimon_vis_v2.yaml` — vision only (tactile disabled via sensor modality `"none"`)
+
+These hyperparameters (vs the defaults of `kl_weight: 10`, `lr_backbone: 1e-5`, `chunk_size: 64`) were tuned to fix mode collapse on small Daimon datasets (~10 k frames).
+
+### 3. Training
+
+**Raw daimon:**
+```bash
+cd tactile_benchmark && \
+CUDA_VISIBLE_DEVICES=0 python tactile_policy/main.py \
+  --batch_size 8 --num_epochs 50000 --lr 1e-5 \
+  --exptid pnp_tennis_ball_raw_cs16 \
+  --dataset_json pnp_tennis_ball_unwrapped \
+  --model_cfg act_daimon_v2 \
+  --chunk_size 16
+```
+
+**Cross-modal latent (16-d):**
+```bash
+cd tactile_benchmark && \
+CUDA_VISIBLE_DEVICES=0 python tactile_policy/main.py \
+  --batch_size 8 --num_epochs 50000 --lr 1e-5 \
+  --exptid pnp_tennis_ball_latent_cs16 \
+  --dataset_json pnp_tennis_ball_unwrapped_latent \
+  --model_cfg act_cross_modal_pnp_z16 \
+  --chunk_size 16
+```
+
+**Vision only (no tactile):**
+```bash
+cd tactile_benchmark && \
+CUDA_VISIBLE_DEVICES=0 python tactile_policy/main.py \
+  --batch_size 8 --num_epochs 50000 --lr 1e-5 \
+  --exptid pnp_tennis_ball_vis_cs16 \
+  --dataset_json pnp_tennis_ball_unwrapped \
+  --model_cfg act_daimon_vis_v2 \
+  --chunk_size 16
+```
+
+### 4. Export JIT and offline eval
+
+```bash
+# Export (example for raw)
+cd tactile_benchmark/tactile_policy/remote_inference && \
+python export_act_to_jit.py \
+  --policy_name pnp_tennis_ball_raw_cs16 \
+  --policy_config act_daimon_v2 && \
+cd ../../..
+
+# Offline replay on val: produces per-episode PNG + npz under eval_outputs/
+python scripts/jit_offline_inference.py \
+  --jit_path   tactile_benchmark/checkpoints/pnp_tennis_ball_raw_cs16_ckpt/policy_jit.pt \
+  --stats_path tactile_benchmark/checkpoints/pnp_tennis_ball_raw_cs16_ckpt/dataset_stats.pkl \
+  --model_cfg  tactile_benchmark/tactile_policy/configs/models/act_daimon_v2.yaml \
+  --hdf_path   tactile_benchmark/data/recordings/processed/pnp_tennis_ball_unwrapped_val \
+  --out_dir    tactile_benchmark/checkpoints/pnp_tennis_ball_raw_cs16_ckpt/eval_outputs \
+  --real_action_dims 8
+```
+
+Note: `export_act_to_jit.py` reads `chunk_size` from the yaml with no CLI override. If you train multiple chunk sizes, make per-chunk-size yaml variants (`act_daimon_v2_cs8.yaml`, `_cs32.yaml`, etc.) — otherwise export will shape-mismatch the checkpoint.
+
+Key offline metrics (printed by `jit_offline_inference.py`):
+- **MAE** on first 8 action dims — lower is better.
+- **pred_std / GT_std** per dim — near 1.0 means the policy tracks trajectory variation. Near 0 on joint dims (0-6) indicates mode collapse even if MAE looks OK.
+
+### 5. Chunk-size sweep
+
+Two-stage sweep scripts in [bash_scripts/](bash_scripts/):
+
+```bash
+# Stage 1: train cs ∈ {8, 16, 32, 64}, cleans intermediate iters
+bash tactile_benchmark/bash_scripts/sweep_chunk_size.sh
+
+# Stage 2: export JIT + offline eval for each trained ckpt, prints MAE summary
+bash tactile_benchmark/bash_scripts/sweep_chunk_size_eval.sh
+```
+
+Override chunk list / epochs via env vars:
+```bash
+EPOCHS=10000 CHUNK_SIZES="16" bash tactile_benchmark/bash_scripts/sweep_chunk_size.sh
+```
+
 
 ## Accelerator
 
