@@ -57,6 +57,48 @@ cross_modal:
   logistic_batch_size: 256
   logistic_epochs: 20
 
+cross_modal_vae:
+  # train options
+  seed: 42
+  batch_size: 64
+  start_epoch: 0
+  epochs: 100
+  pretrain: True
+  learning_rate: 1.0e-4
+
+  # image encoder (Daimon) options
+  resnet: "resnet18"
+
+  # magnetic encoder (eFlesh) options
+  magnetic_input_dim: 15
+  magnetic_hidden_dims: [64, 128, 256]
+
+  # projection head options (VAE: head outputs 2*projection_dim for (mu, logvar))
+  projection_dim: 16
+
+  # loss options
+  optimizer: "Adam"
+  weight_decay: 1.0e-4
+  temperature: 0.03  # NT-Xent temperature applied to mu_i, mu_j
+
+  # VAE + reconstruction weights
+  lambda_recon: 1.0     # weight for 4-branch L1 reconstruction
+  beta_max: 0.01        # maximum KL weight after warm-up
+  kl_warmup_epochs: 30  # linear warm-up: beta goes 0 -> beta_max over this many epochs
+
+  # decoder architecture
+  # image_decoder_channels = list of channel widths for ConvTranspose2d stack.
+  # Each entry doubles the spatial side; starting resolution is out_size / 2**len.
+  # With out_size=224 and 4 entries, start=14 and output=224.
+  image_out_channels: 3
+  image_out_size: 224
+  image_decoder_channels: [256, 128, 64, 32]
+  magnetic_decoder_hidden: [256, 128, 64]
+
+  # logistic regression options
+  logistic_batch_size: 256
+  logistic_epochs: 20
+
 barlow_twins:
   # train options
   seed: 42 # sacred handles automatic seeding when passed in the config

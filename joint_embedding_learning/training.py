@@ -46,11 +46,47 @@ def _use_cwcl(args, model_name):
     return model_name == 'cross_modal' and getattr(args, 'loss', 'infonce') == 'cwcl'
 
 
-def _compute_loss(args, model_name, criterion, z_i, z_j, meta):
-    """Dispatch loss call depending on whether CWCL (needs meta) or classic InfoNCE/Barlow."""
+def _use_vae(model_name):
+    return model_name == 'cross_modal_vae'
+
+
+def _kl_beta(args):
+    """Linear warm-up: 0 -> beta_max over kl_warmup_epochs, then clamped at beta_max."""
+    beta_max = float(getattr(args, 'beta_max', 0.0))
+    warmup = max(int(getattr(args, 'kl_warmup_epochs', 0)), 1)
+    frac = min(1.0, float(args.current_epoch) / warmup)
+    return beta_max * frac
+
+
+def _compute_loss(args, model_name, criterion, outputs, x_i, x_j, meta):
+    """Dispatch loss call.
+
+    outputs is:
+      - tuple (h_i, h_j, z_i, z_j) for legacy cross_modal / simclr / barlow_twins
+      - dict  from CrossModalVAE for model_name == 'cross_modal_vae'
+    Returns (loss_tensor, loss_info_dict).
+    """
+    if _use_vae(model_name):
+        beta = _kl_beta(args)
+        losses = criterion(outputs, x_i, x_j, beta=beta)
+        return losses['total'], losses
+    # legacy path: z_i, z_j tuple
+    _, _, z_i, z_j = outputs
     if _use_cwcl(args, model_name):
-        return criterion(z_i, z_j, meta)
-    return criterion(z_i, z_j)
+        return criterion(z_i, z_j, meta), None
+    return criterion(z_i, z_j), None
+
+
+def _unpack_forward(model_name, out):
+    """Unify legacy (h_i, h_j, z_i, z_j) tuple and CrossModalVAE dict.
+
+    Returns (h_i, h_j, repr_i, repr_j) where repr_* is used for contrastive
+    diagnostics: for VAE we use mu (deterministic, matches InfoNCE target).
+    """
+    if _use_vae(model_name):
+        return out['h_i'], out['h_j'], out['mu_i'], out['mu_j']
+    h_i, h_j, z_i, z_j = out
+    return h_i, h_j, z_i, z_j
 
 
 def _prepare_meta(labels, device, model_name):
@@ -58,7 +94,7 @@ def _prepare_meta(labels, device, model_name):
 
     Returns a tuple of three (B,) long tensors, or None for non cross_modal datasets.
     """
-    if model_name != 'cross_modal' or labels is None:
+    if model_name not in ('cross_modal', 'cross_modal_vae') or labels is None:
         return None
     if not isinstance(labels, (list, tuple)) or len(labels) < 3:
         return None
@@ -73,6 +109,7 @@ def train_step(args, train_loaders, model_name, model, criterion, optimizer, sca
     loader_len = len(train_loaders[0]) * len(train_loaders)
     step_lr = args.current_epoch * loader_len
     use_cwcl = _use_cwcl(args, model_name)
+    use_vae = _use_vae(model_name)
     for loader in train_loaders:
         for step, ((x_i, x_j), labels) in tqdm(enumerate(loader)):
             x_i = x_i.to(args.device)
@@ -81,8 +118,8 @@ def train_step(args, train_loaders, model_name, model, criterion, optimizer, sca
 
             if args.optimizer == "Adam":
                 optimizer.zero_grad()
-                h_i, h_j, z_i, z_j = model(x_i, x_j)
-                loss = _compute_loss(args, model_name, criterion, z_i, z_j, meta)
+                out = model(x_i, x_j)
+                loss, info = _compute_loss(args, model_name, criterion, out, x_i, x_j, meta)
                 loss.backward()
                 optimizer.step()
 
@@ -90,8 +127,8 @@ def train_step(args, train_loaders, model_name, model, criterion, optimizer, sca
                 adjust_learning_rate(args.epochs, args.batch_size, args.learning_rate_weights, args.learning_rate_biases, optimizer, loader_len, step_lr)
                 optimizer.zero_grad()
                 with torch.cuda.amp.autocast():
-                    h_i, h_j, z_i, z_j = model(x_i, x_j)
-                    loss = _compute_loss(args, model_name, criterion, z_i, z_j, meta)
+                    out = model(x_i, x_j)
+                    loss, info = _compute_loss(args, model_name, criterion, out, x_i, x_j, meta)
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
@@ -100,8 +137,9 @@ def train_step(args, train_loaders, model_name, model, criterion, optimizer, sca
                 raise NotImplementedError
 
             with torch.no_grad():
+                h_i, h_j, repr_i, repr_j = _unpack_forward(model_name, out)
                 loss_vector_0 = loss_vector_embedding(h_i, h_j)
-                m = compute_embedding_metrics(z_i, z_j)
+                m = compute_embedding_metrics(repr_i, repr_j)
 
                 if step % 50 == 0:
                     print(f"Step [{step}/{len(loader)}]\t Loss: {loss.item()}")
@@ -126,6 +164,14 @@ def train_step(args, train_loaders, model_name, model, criterion, optimizer, sca
                     )
                     for k, v in stats.items():
                         log_dict[f"Metric_train/{k}"] = v
+                if use_vae and info is not None:
+                    for k in ('infonce', 'recon', 'kl',
+                              'recon_ii', 'recon_ji', 'recon_jj', 'recon_ij',
+                              'kl_i', 'kl_j', 'beta'):
+                        v = info.get(k)
+                        if v is None:
+                            continue
+                        log_dict[f"Loss_train/{k}"] = v.item() if torch.is_tensor(v) else float(v)
                 wandb.log(log_dict)
                 args.global_step += 1
 
@@ -142,6 +188,7 @@ def validation_step(args, val_loaders, model, criterion, wandb, val_name = "Val"
     loss_epoch = 0
     loss_vector = 0
     count = 0
+    use_vae = _use_vae(model_name)
 
     model.eval()
     with torch.no_grad():
@@ -151,16 +198,17 @@ def validation_step(args, val_loaders, model, criterion, wandb, val_name = "Val"
                 x_j = x_j.to(args.device)
                 meta = _prepare_meta(labels, args.device, model_name)
 
-                h_i, h_j, z_i, z_j = model(x_i, x_j)
-                loss = _compute_loss(args, model_name, criterion, z_i, z_j, meta)
+                out = model(x_i, x_j)
+                loss, info = _compute_loss(args, model_name, criterion, out, x_i, x_j, meta)
+                h_i, h_j, repr_i, repr_j = _unpack_forward(model_name, out)
                 loss_vector_0 = loss_vector_embedding(h_i, h_j)
-                m = compute_embedding_metrics(z_i, z_j)
+                m = compute_embedding_metrics(repr_i, repr_j)
 
                 if step % 50 == 0:
                     print(f"Step [{step}/{len(val_loader)}]\t" + val_name + "Loss: {loss.item()}")
                     print(f"Step [{step}/{len(val_loader)}]\t" + val_name + "Loss Vector: {loss_vector_0.item()}")
 
-                wandb.log({
+                log_dict = {
                     "Loss_" + val_name + "/Model_Loss_batch": loss.item(),
                     "Loss_" + val_name + "/embedding_diff_batch": loss_vector_0.item(),
                     f"Metric_{val_name}/pos_cos_mean": m['pos_cos_mean'],
@@ -170,7 +218,16 @@ def validation_step(args, val_loaders, model, criterion, wandb, val_name = "Val"
                     f"Metric_{val_name}/gap"         : m['gap'],
                     f"Metric_{val_name}/alignment"   : m['alignment'],
                     "Epoch": args.current_epoch,
-                })
+                }
+                if use_vae and info is not None:
+                    for k in ('infonce', 'recon', 'kl',
+                              'recon_ii', 'recon_ji', 'recon_jj', 'recon_ij',
+                              'kl_i', 'kl_j', 'beta'):
+                        v = info.get(k)
+                        if v is None:
+                            continue
+                        log_dict[f"Loss_{val_name}/{k}"] = v.item() if torch.is_tensor(v) else float(v)
+                wandb.log(log_dict)
 
                 loss_epoch += loss.item()
                 loss_vector += loss_vector_0.item()
@@ -223,6 +280,15 @@ def train(train_datasets, validation_datasets, dataset_name, dataset_details, mo
         if loss_type == 'cwcl':
             print('CWCL sigma:', getattr(args, 'cwcl_sigma', 5.0))
             print('CWCL same_episode_only:', getattr(args, 'cwcl_same_episode_only', True))
+    elif args.model_name == 'cross_modal_vae':
+        print('Temperature:', args.temperature)
+        print('Magnetic Input Dim:', args.magnetic_input_dim)
+        print('Magnetic Hidden Dims:', args.magnetic_hidden_dims)
+        print('Lambda Recon:', getattr(args, 'lambda_recon', 1.0))
+        print('Beta Max:', getattr(args, 'beta_max', 0.0))
+        print('KL Warmup Epochs:', getattr(args, 'kl_warmup_epochs', 0))
+        print('Image Decoder Channels:', getattr(args, 'image_decoder_channels', [256, 128, 64, 32]))
+        print('Magnetic Decoder Hidden:', getattr(args, 'magnetic_decoder_hidden', [256, 128, 64]))
     
     train_loaders = []
     for dataset in train_datasets:
@@ -262,7 +328,7 @@ def train(train_datasets, validation_datasets, dataset_name, dataset_details, mo
 
             if epoch % 10 == 0:
                 save_model(model, dataset_name, dataset_type, model_type, dataset_details, model_details, run_name=run_name)
-                if model_name == 'cross_modal':
+                if model_name in ('cross_modal', 'cross_modal_vae'):
                     grid = make_grid(x_i[:36], nrow=6, normalize=True)
                     wandb.log({"Image_Daimon": [wandb.Image(grid)], "Epoch": epoch})
                 else:

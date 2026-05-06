@@ -1,0 +1,4 @@
+{
+    "train": ["plug_daimon_insert_white"],
+    "val": ["plug_daimon_insert_white_val"]
+}

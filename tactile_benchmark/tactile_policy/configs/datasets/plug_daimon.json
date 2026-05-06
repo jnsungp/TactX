@@ -1,0 +1,4 @@
+{
+    "train": ["plug_daimon"],
+    "val": ["plug_daimon_val"]
+}

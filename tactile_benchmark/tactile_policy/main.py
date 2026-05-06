@@ -91,6 +91,10 @@ def main(args, base_dir):
         sensor_config = OmegaConf.load(sensor_config_path)
         trainer_config['sensor'] = sensor_config
 
+    # Fall back to YAML chunk_size when not supplied on the command line.
+    if args['chunk_size'] is None:
+        args['chunk_size'] = int(trainer_config['model']['chunk_size'])
+
     policy_class = trainer_config["common"]["policy_class"]
     batch_size_train = args['batch_size']
     batch_size_val = args['batch_size']

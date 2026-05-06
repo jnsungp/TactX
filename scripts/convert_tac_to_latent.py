@@ -28,10 +28,16 @@ from joint_embedding_learning.utils.models_setup import get_model
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Convert tac0/tac1 to latent z using trained CrossModalCLR")
+    parser = argparse.ArgumentParser(description="Convert tac0/tac1 to latent z using a trained CrossModalCLR / CrossModalVAE checkpoint")
     parser.add_argument("--checkpoint_dir", type=str,
                         default="checkpoints/cross_modal/cross_modal/dataset_cross_modal_run_sweep_20260419_155206_lr1e-4_tau0.03_bs64_pd16",
                         help="Path to checkpoint directory containing model.pt and yaml configs")
+    parser.add_argument("--model_name", type=str, default="cross_modal",
+                        choices=["cross_modal", "cross_modal_vae"],
+                        help="Model architecture used for the checkpoint")
+    parser.add_argument("--latent_type", type=str, default="mu",
+                        choices=["mu", "h", "z"],
+                        help="Which latent to save for cross_modal_vae: mu (default, aligned), h (representation), z (sampled)")
     parser.add_argument("--daimon_input_dir", type=str,
                         default="/home/junsung/cross_modal_tactile/tactile_benchmark/data/recordings/processed/pnp_tennis_ball_unwrapped_val",
                         help="Directory with daimon HDF5 episodes (tac0/tac1 shape: N×384000)")
@@ -43,8 +49,8 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_model(checkpoint_dir, device):
-    """Load trained CrossModalCLR model from checkpoint."""
+def load_model(checkpoint_dir, model_name, device):
+    """Load trained CrossModalCLR / CrossModalVAE model from checkpoint."""
     model_details_path = os.path.join(checkpoint_dir, "model_details.yaml")
     dataset_details_path = os.path.join(checkpoint_dir, "dataset_details.yaml")
     model_pt_path = os.path.join(checkpoint_dir, "model.pt")
@@ -54,7 +60,7 @@ def load_model(checkpoint_dir, device):
     with open(dataset_details_path, 'r') as f:
         dataset_details = yaml.safe_load(f)
 
-    model = get_model('cross_modal', model_details)
+    model = get_model(model_name, model_details)
     state_dict = torch.load(model_pt_path, map_location=device)
     model.load_state_dict(state_dict)
     model = model.to(device)
@@ -83,11 +89,17 @@ def extract_depth_from_tac(raw_frame):
 
 
 @torch.no_grad()
-def encode_daimon_batch(model, batch, transform, device):
+def encode_daimon_batch(model, batch, transform, device, model_name='cross_modal', latent_type='mu'):
     """
-    Encode a batch of daimon depth frames to latent z.
+    Encode a batch of daimon depth frames to latent.
     batch: (B, 240, 320) numpy float32
-    Returns: (B, projection_dim) numpy float32
+    Returns: (B, latent_dim) numpy float32
+
+    For cross_modal_vae, the projector outputs 2*projection_dim logits which are
+    split into (mu, logvar). latent_type selects which representation to save:
+      - 'mu': posterior mean (aligned space, stable, recommended for downstream).
+      - 'h' : pre-projection representation (richer, single-modal).
+      - 'z' : reparameterized sample (stochastic; mu at eval via reparam(training=False)).
     """
     tensors = []
     for frame in batch:
@@ -97,12 +109,29 @@ def encode_daimon_batch(model, batch, transform, device):
         tensors.append(t)
 
     x = torch.stack(tensors, dim=0).to(device)  # (B, 3, 224, 224)
-    h = model.image_encoder(x)                  # (B, 512)
-    z = model.projector_image(h)                # (B, 64)
-    return z.cpu().numpy()
+    h = model.image_encoder(x)                  # (B, n_features)
+
+    if model_name == 'cross_modal_vae':
+        if latent_type == 'h':
+            out = h
+        else:
+            proj = model.projector_image(h)              # (B, 2 * projection_dim)
+            mu, logvar = proj.chunk(2, dim=-1)
+            if latent_type == 'mu':
+                out = mu
+            elif latent_type == 'z':
+                # model is in eval mode -> reparameterize returns mu anyway
+                out = model.reparameterize(mu, logvar, training=False)
+            else:
+                raise ValueError(f"Unknown latent_type: {latent_type}")
+    else:
+        out = model.projector_image(h)
+
+    return out.cpu().numpy()
 
 
-def process_episodes(input_dir, output_dir, model, dataset_details, batch_size, device, projection_dim=64):
+def process_episodes(input_dir, output_dir, model, dataset_details, batch_size, device, projection_dim=64,
+                     model_name='cross_modal', latent_type='mu'):
     """
     Process all HDF5 episodes: convert tac0/tac1 → latent z, copy everything else.
     """
@@ -138,7 +167,8 @@ def process_episodes(input_dir, output_dir, model, dataset_details, batch_size, 
                     end = min(start + batch_size, N)
                     batch_raw = raw_data[start:end]
                     depths = np.stack([extract_depth_from_tac(frame) for frame in batch_raw])
-                    latent = encode_daimon_batch(model, depths, transform, device)
+                    latent = encode_daimon_batch(model, depths, transform, device,
+                                                 model_name=model_name, latent_type=latent_type)
                     latent_all[start:end] = latent
 
                 fout.create_dataset(tac_key, data=latent_all)
@@ -164,19 +194,30 @@ def main():
     print(f"  Batch size : {args.batch_size}")
     print()
 
-    model, model_details, dataset_details = load_model(checkpoint_dir, args.device)
+    model, model_details, dataset_details = load_model(checkpoint_dir, args.model_name, args.device)
+    print(f"  Model       : {args.model_name}")
     print(f"  Model loaded: projection_dim={model_details['projection_dim']}, "
           f"resnet={model_details['resnet']}")
+    if args.model_name == 'cross_modal_vae':
+        print(f"  Latent type : {args.latent_type}")
     print()
 
-    # --- Daimon dataset (384000-dim → depth image → image_encoder → z) ---
+    # Determine output latent dimension.
+    if args.model_name == 'cross_modal_vae' and args.latent_type == 'h':
+        # h dimension = ResNet fc.in_features (512 for resnet18, 2048 for resnet50)
+        projection_dim = 512 if model_details.get('resnet', 'resnet18') == 'resnet18' else 2048
+    else:
+        projection_dim = model_details['projection_dim']
+
+    # --- Daimon dataset (384000-dim → depth image → image_encoder → latent) ---
     if os.path.isdir(args.daimon_input_dir):
         print(f"[Daimon] {args.daimon_input_dir}")
         print(f"         → {args.daimon_output_dir}")
         process_episodes(
             args.daimon_input_dir, args.daimon_output_dir,
             model, dataset_details, args.batch_size, args.device,
-            projection_dim=model_details['projection_dim'],
+            projection_dim=projection_dim,
+            model_name=args.model_name, latent_type=args.latent_type,
         )
         print()
     else:

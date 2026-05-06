@@ -54,8 +54,8 @@ class CMTJESimCLR(Dataset):
         # # Check if the CSV file already has content
         # file_exists = os.path.isfile(csv_file) and os.path.getsize(csv_file) > 0
 
-        bubbles_data = torch.load(self.bubbles_files[idx], map_location=self.device)
-        gelslim_data = torch.load(self.gelslim_files[idx], map_location=self.device)
+        bubbles_data = torch.load(self.bubbles_files[idx], map_location=self.device, weights_only=False)
+        gelslim_data = torch.load(self.gelslim_files[idx], map_location=self.device, weights_only=False)
         # print('Index on dataset:', idx)
 
         # with open(csv_file, 'a', newline='') as file:
@@ -225,8 +225,8 @@ class CrossModalDataset(Dataset):
         return len(self.daimon_files)
 
     def __getitem__(self, idx):
-        daimon_data = torch.load(self.daimon_files[idx], map_location=self.device)
-        eflesh_data = torch.load(self.eflesh_files[idx], map_location=self.device)
+        daimon_data = torch.load(self.daimon_files[idx], map_location=self.device, weights_only=False)
+        eflesh_data = torch.load(self.eflesh_files[idx], map_location=self.device, weights_only=False)
 
         # --- Daimon image processing ---
         daimon_img = daimon_data['image'].float()  # (C, H, W) or (H, W)

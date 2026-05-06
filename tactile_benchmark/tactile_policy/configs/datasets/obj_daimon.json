@@ -1,0 +1,4 @@
+{
+    "train": ["obj_daimon"],
+    "val": ["obj_daimon_val"]
+}

@@ -2,10 +2,93 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+try:
+    from simclr.modules import NT_Xent
+except Exception:
+    NT_Xent = None
+
 
 def loss_vector_embedding(z_i, z_j):
     loss = torch.nn.functional.mse_loss(z_i, z_j)
     return loss
+
+
+def kl_divergence_standard(mu, logvar):
+    """KL[ q(z|x) || N(0, I) ] averaged over batch and latent dims.
+
+    mu, logvar: (B, D)
+    Returns: scalar tensor.
+    """
+    kl = -0.5 * (1.0 + logvar - mu.pow(2) - logvar.exp())
+    return kl.mean()
+
+
+class CrossModalVAELoss(nn.Module):
+    """Combined loss for CrossModalVAE: InfoNCE(mu) + lambda_recon * L_recon + beta * KL.
+
+    - InfoNCE is applied on the *means* of the VAE posteriors (mu_i, mu_j), not
+      the reparameterized samples. This avoids injecting sampling noise into the
+      contrastive alignment signal (tactile data is already noisy).
+    - 4-branch L1 reconstruction decoded from the variational latent z (NOT h),
+      forcing all reconstruction-relevant information through the shared bottleneck:
+          recon_ii (D_img(z_i) vs x_i),   recon_ji (D_img(z_j) vs x_i),
+          recon_jj (D_mag(z_j) vs x_j),   recon_ij (D_mag(z_i) vs x_j).
+      The cross branches pull z_i and z_j into the same space (shared code).
+    - KL regularizes both posteriors toward N(0, I).
+    - beta is set externally per-epoch (warm-up schedule).
+
+    forward(out, x_i, x_j, beta) returns dict with sub-losses and 'total'.
+    """
+
+    def __init__(self, batch_size, temperature, lambda_recon=1.0):
+        super().__init__()
+        if NT_Xent is None:
+            raise ImportError("simclr.modules.NT_Xent is required for CrossModalVAELoss")
+        self.nt_xent = NT_Xent(batch_size, temperature, 1)
+        self.lambda_recon = float(lambda_recon)
+
+    def forward(self, out, x_i, x_j, beta=0.0):
+        """
+        Args:
+            out: dict produced by CrossModalVAE.forward (must contain mu_i, logvar_i,
+                 mu_j, logvar_j, recon_ii, recon_ji, recon_jj, recon_ij).
+            x_i: Daimon image batch (B, C, H, W).
+            x_j: eFlesh magnetic batch (B, 15).
+            beta: float, KL weight applied this step (e.g. from warm-up scheduler).
+
+        Returns a dict with scalar tensors: total, infonce, recon, kl,
+        recon_ii, recon_ji, recon_jj, recon_ij, kl_i, kl_j, beta.
+        """
+        mu_i, mu_j = out["mu_i"], out["mu_j"]
+        logvar_i, logvar_j = out["logvar_i"], out["logvar_j"]
+
+        # InfoNCE on normalized means (NT_Xent internally uses cosine similarity,
+        # so normalization is implicit, but we pass mu directly).
+        L_info = self.nt_xent(mu_i, mu_j)
+
+        # 4-branch L1 reconstruction (self + cross).
+        r_ii = F.l1_loss(out["recon_ii"], x_i)
+        r_ji = F.l1_loss(out["recon_ji"], x_i)
+        r_jj = F.l1_loss(out["recon_jj"], x_j)
+        r_ij = F.l1_loss(out["recon_ij"], x_j)
+        L_recon = r_ii + r_ji + r_jj + r_ij
+
+        # KL regularization.
+        kl_i = kl_divergence_standard(mu_i, logvar_i)
+        kl_j = kl_divergence_standard(mu_j, logvar_j)
+        L_kl = kl_i + kl_j
+
+        total = L_info + self.lambda_recon * L_recon + beta * L_kl
+
+        return {
+            "total": total,
+            "infonce": L_info.detach(),
+            "recon": L_recon.detach(),
+            "recon_ii": r_ii.detach(), "recon_ji": r_ji.detach(),
+            "recon_jj": r_jj.detach(), "recon_ij": r_ij.detach(),
+            "kl": L_kl.detach(), "kl_i": kl_i.detach(), "kl_j": kl_j.detach(),
+            "beta": torch.tensor(float(beta)),
+        }
 
 def loss_vector_similarity(h_i, h_j):
     loss = torch.nn.functional.cosine_similarity(h_i, h_j)
