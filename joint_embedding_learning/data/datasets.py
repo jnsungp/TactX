@@ -340,7 +340,312 @@ def get_cross_modal_datasets(dataset_name, dataset_details, data_split='train', 
         return [dataset_train], unseen_grasps_test_list, unseen_tools_test_list
 
 
-def get_all_contrastive_datasets(dataset_name, data_split = 'train', device = 'cpu'):
+class CrossModalPairDataset(Dataset):
+    """
+    Single-pair dataset for tri-modal training (raw-tensor .pt format).
+
+    Directory layout (per pair root):
+        pair_root/sensor_a/ep****_fr****.pt
+        pair_root/sensor_b/ep****_fr****.pt
+
+    Each .pt file contains a *raw tensor* (NOT a dict):
+        Daimon  : (3, 240, 320)  float32
+        eFlesh  : (15,)          float32
+        Flexi   : (12, 16)       float32
+
+    Pairing rule: exact basename match (ep0000_fr0001.pt in sensor_a/ <-> same
+    name in sensor_b/). Files that exist on only one side are dropped.
+    """
+
+    def __init__(self, pair_root, sensor_a, sensor_b,
+                 transforms_a=None, transforms_b=None,
+                 mean_a=None, std_a=None, mean_b=None, std_b=None,
+                 device='cpu', objects=None):
+        a_dir = os.path.join(pair_root, sensor_a)
+        b_dir = os.path.join(pair_root, sensor_b)
+
+        if objects is not None:
+            # Per-object layout: sensor/{object}/ep****_fr****.pt
+            a_files = {}
+            b_files = {}
+            for obj in objects:
+                for p in glob.glob(os.path.join(a_dir, obj, '*.pt')):
+                    a_files[f"{obj}/{os.path.basename(p)}"] = p
+                for p in glob.glob(os.path.join(b_dir, obj, '*.pt')):
+                    b_files[f"{obj}/{os.path.basename(p)}"] = p
+        else:
+            # Flat layout: sensor/ep****_fr****.pt
+            a_files = {os.path.basename(p): p
+                       for p in glob.glob(os.path.join(a_dir, '*.pt'))}
+            b_files = {os.path.basename(p): p
+                       for p in glob.glob(os.path.join(b_dir, '*.pt'))}
+        common = sorted(set(a_files) & set(b_files), key=sort_order)
+
+        self.sensor_a = sensor_a
+        self.sensor_b = sensor_b
+        self.files_a = [a_files[n] for n in common]
+        self.files_b = [b_files[n] for n in common]
+        self.episode_per_sample = []
+        self.frame_per_sample = []
+        for n in common:
+            ep, fr = _parse_ep_fr(n)
+            self.episode_per_sample.append(ep)
+            self.frame_per_sample.append(fr)
+
+        self.transforms_a = transforms_a
+        self.transforms_b = transforms_b
+        self.mean_a = torch.tensor(mean_a, dtype=torch.float32) if mean_a is not None else None
+        self.std_a = torch.tensor(std_a, dtype=torch.float32) if std_a is not None else None
+        self.mean_b = torch.tensor(mean_b, dtype=torch.float32) if mean_b is not None else None
+        self.std_b = torch.tensor(std_b, dtype=torch.float32) if std_b is not None else None
+        self.device = device
+
+    def __len__(self):
+        return len(self.files_a)
+
+    @staticmethod
+    def _apply_zscore(x, mean, std):
+        if mean is None or std is None:
+            return x
+        m = mean.to(x.device)
+        s = std.to(x.device)
+        # broadcast over the leading dims; eFlesh: (15,) over (15,);
+        # Daimon: (3,) over (3, H, W) requires reshape to (3, 1, 1).
+        if x.dim() >= 2 and m.dim() == 1 and m.shape[0] == x.shape[0]:
+            m = m.view(-1, *([1] * (x.dim() - 1)))
+            s = s.view(-1, *([1] * (x.dim() - 1)))
+        return (x - m) / (s + 1e-8)
+
+    def _load_one(self, path, transforms_, mean, std):
+        x = torch.load(path, map_location=self.device, weights_only=False)
+        if isinstance(x, dict):
+            # backward-compat: also accept dict-style files if encountered.
+            if 'image' in x: x = x['image']
+            elif 'magnetic' in x: x = x['magnetic']
+            elif 'flexi' in x or 'flexitac' in x:
+                x = x.get('flexi', x.get('flexitac'))
+            else:
+                raise ValueError(f"Unknown dict keys in {path}: {list(x.keys())}")
+        x = x.float()
+        x = self._apply_zscore(x, mean, std)
+        if transforms_ is not None:
+            x = transforms_(x)
+        return x
+
+    def __getitem__(self, idx):
+        x_a = self._load_one(self.files_a[idx], self.transforms_a,
+                             self.mean_a, self.std_a)
+        x_b = self._load_one(self.files_b[idx], self.transforms_b,
+                             self.mean_b, self.std_b)
+        episode_id = torch.tensor(self.episode_per_sample[idx], dtype=torch.long).to(self.device)
+        frame_id = torch.tensor(self.frame_per_sample[idx], dtype=torch.long).to(self.device)
+        return [x_a, x_b], [episode_id, frame_id]
+
+
+class DynamicSelfDataset(Dataset):
+    """
+    Single-sensor (unpaired) dataset for Stage 1 dynamic self-recon pretraining.
+
+    Directory layout (flat):
+        sensor_root/ep****_fr****.pt
+
+    Each .pt is a raw tensor (see CrossModalPairDataset for sensor shapes).
+    No pairing across modalities; each modality has its own dataset.
+    """
+
+    def __init__(self, sensor_root, sensor_name,
+                 transform=None, mean=None, std=None, device='cpu'):
+        files = sorted(glob.glob(os.path.join(sensor_root, '*.pt')),
+                       key=lambda p: sort_order(os.path.basename(p)))
+        self.sensor_name = sensor_name
+        self.files = files
+        self.episode_per_sample = []
+        self.frame_per_sample = []
+        for p in files:
+            ep, fr = _parse_ep_fr(p)
+            self.episode_per_sample.append(ep)
+            self.frame_per_sample.append(fr)
+
+        self.transform = transform
+        self.mean = torch.tensor(mean, dtype=torch.float32) if mean is not None else None
+        self.std = torch.tensor(std, dtype=torch.float32) if std is not None else None
+        self.device = device
+
+    def __len__(self):
+        return len(self.files)
+
+    @staticmethod
+    def _apply_zscore(x, mean, std):
+        if mean is None or std is None:
+            return x
+        m = mean.to(x.device)
+        s = std.to(x.device)
+        if x.dim() >= 2 and m.dim() == 1 and m.shape[0] == x.shape[0]:
+            m = m.view(-1, *([1] * (x.dim() - 1)))
+            s = s.view(-1, *([1] * (x.dim() - 1)))
+        return (x - m) / (s + 1e-8)
+
+    def __getitem__(self, idx):
+        path = self.files[idx]
+        x = torch.load(path, map_location=self.device, weights_only=False)
+        if isinstance(x, dict):
+            if 'image' in x: x = x['image']
+            elif 'magnetic' in x: x = x['magnetic']
+            elif 'flexi' in x or 'flexitac' in x:
+                x = x.get('flexi', x.get('flexitac'))
+            else:
+                raise ValueError(f"Unknown dict keys in {path}: {list(x.keys())}")
+        x = x.float()
+        x = self._apply_zscore(x, self.mean, self.std)
+        if self.transform is not None:
+            x = self.transform(x)
+        episode_id = torch.tensor(self.episode_per_sample[idx], dtype=torch.long).to(self.device)
+        frame_id = torch.tensor(self.frame_per_sample[idx], dtype=torch.long).to(self.device)
+        return x, [episode_id, frame_id]
+
+
+def _build_sensor_transforms(dataset_details, sensor_name, image_size):
+    """Build (transforms, mean, std) for a sensor from the dataset_details yaml.
+
+    Conventions:
+      - daimon: optional ['resize', 'normalize']. Normalize uses
+        daimon_stats.mean / std (length 3 for the 3-channel input).
+        We do z-score via tensor stats (same as torchvision Normalize).
+      - eflesh: optional ['normalize']. Uses eflesh_stats (length 15).
+      - flexi : optional ['normalize']. Uses flexitac_stats (scalar mean/std).
+    """
+    transforms_list = []
+    mean = None
+    std = None
+
+    if sensor_name == 'daimon':
+        names = dataset_details.get('daimon_transforms', None) or []
+        if 'resize' in names:
+            transforms_list.append(transforms.Resize((image_size, image_size), antialias=True))
+        if 'normalize' in names:
+            stats = dataset_details.get('daimon_stats', None)
+            if stats is not None:
+                mean = stats['mean']
+                std = stats['std']
+    elif sensor_name == 'eflesh':
+        names = dataset_details.get('eflesh_transforms', None) or []
+        if 'normalize' in names:
+            stats = dataset_details.get('eflesh_stats', None)
+            if stats is not None:
+                mean = stats['mean']
+                std = stats['std']
+    elif sensor_name == 'flexi':
+        names = dataset_details.get('flexitac_transforms', None) or []
+        if 'normalize' in names:
+            stats = dataset_details.get('flexitac_stats', None)
+            if stats is not None:
+                # Allow scalar or list; broadcast scalar to a single-element tensor.
+                m = stats['mean']
+                s = stats['std']
+                mean = m if isinstance(m, (list, tuple)) else [float(m)]
+                std = s if isinstance(s, (list, tuple)) else [float(s)]
+    else:
+        raise ValueError(f"Unknown sensor: {sensor_name}")
+
+    transform = transforms.Compose(transforms_list) if transforms_list else None
+    return transform, mean, std
+
+
+def get_cross_modal_tri_datasets(dataset_name, dataset_details, data_split='train', device='cpu', objects=None):
+    """Build 80/20 train/val datasets for tri-modal (Daimon + eFlesh + FlexiTac).
+
+    Args:
+        objects: optional list of object names to include (e.g. ['cylinder', 'plug']).
+                 Requires per-object directory layout under each sensor dir.
+                 If None, uses the flat layout (all files directly under sensor dir).
+
+    Returns:
+        train_datasets : dict {'de': ds, 'ef': ds, 'fd': ds}
+        val_datasets   : dict {'de': ds_val, 'ef': ds_val, 'fd': ds_val}
+        empty_test     : {}
+    """
+    data_root = dataset_details['data_root']
+    image_size = dataset_details.get('image_size', 224)
+    pairs = dataset_details['pairs']
+    train_frac = float(dataset_details.get('train_frac', 0.8))
+
+    sensor_cache = {}
+    def _trans(sensor):
+        if sensor not in sensor_cache:
+            sensor_cache[sensor] = _build_sensor_transforms(dataset_details, sensor, image_size)
+        return sensor_cache[sensor]
+
+    train_datasets = {}
+    val_datasets = {}
+
+    for pair_key, pair_cfg in pairs.items():
+        sensor_a = pair_cfg['sensor_a']
+        sensor_b = pair_cfg['sensor_b']
+        pair_root = os.path.join(data_root, pair_cfg['root'])
+
+        ta, ma, sa = _trans(sensor_a)
+        tb, mb, sb = _trans(sensor_b)
+        ds_full = CrossModalPairDataset(
+            pair_root, sensor_a, sensor_b,
+            transforms_a=ta, transforms_b=tb,
+            mean_a=ma, std_a=sa, mean_b=mb, std_b=sb,
+            device=device, objects=objects,
+        )
+
+        n = len(ds_full)
+        train_len = int(train_frac * n)
+        val_len = n - train_len
+        ds_train, ds_val = random_split(
+            ds_full, [train_len, val_len],
+            generator=torch.Generator().manual_seed(0),
+        )
+
+        train_datasets[pair_key] = ds_train
+        val_datasets[pair_key] = ds_val
+
+    return train_datasets, val_datasets, {}
+
+
+def get_dynamic_self_datasets(dataset_name, dataset_details, data_split='train', device='cpu'):
+    """Build per-modality datasets for Stage 1 dynamic self-recon pretrain.
+
+    Layout: data_root/{daimon|eflesh|flexi}/ep****_fr****.pt (flat, unpaired)
+
+    Returns:
+        train_datasets : dict {'D': ds_D, 'E': ds_E, 'F': ds_F}
+        val_datasets   : dict {'D': ds_D_val, 'E': ds_E_val, 'F': ds_F_val}
+        empty_test     : {}
+    """
+    data_root = dataset_details['data_root']
+    image_size = dataset_details.get('image_size', 224)
+    sensors = dataset_details.get('sensors', {'D': 'daimon', 'E': 'eflesh', 'F': 'flexi'})
+    train_frac = float(dataset_details.get('train_frac', 0.8))
+
+    train_datasets = {}
+    val_datasets = {}
+
+    for key, sensor_name in sensors.items():
+        transform, mean, std = _build_sensor_transforms(dataset_details, sensor_name, image_size)
+        sensor_root = os.path.join(data_root, sensor_name)
+        ds_full = DynamicSelfDataset(
+            sensor_root, sensor_name,
+            transform=transform, mean=mean, std=std,
+            device=device,
+        )
+        n = len(ds_full)
+        train_len = int(train_frac * n)
+        val_len = n - train_len
+        ds_train, ds_val = random_split(
+            ds_full, [train_len, val_len],
+            generator=torch.Generator().manual_seed(0),
+        )
+        train_datasets[key] = ds_train
+        val_datasets[key] = ds_val
+
+    return train_datasets, val_datasets, {}
+
+
+def get_all_contrastive_datasets(dataset_name, data_split='train', device='cpu', objects=None):
     dataset_config =  os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'config', 'datasets_config.yaml')
 
     with open(dataset_config, 'r') as file:
@@ -355,6 +660,10 @@ def get_all_contrastive_datasets(dataset_name, data_split = 'train', device = 'c
         return get_stl_10_datasets(dataset_details, data_split)
     elif dataset_type == 'cross_modal':
         return get_cross_modal_datasets(dataset_name, dataset_details, data_split, device)
+    elif dataset_type == 'cross_modal_tri':
+        return get_cross_modal_tri_datasets(dataset_name, dataset_details, data_split, device, objects=objects)
+    elif dataset_type == 'cross_modal_tri_dynamic':
+        return get_dynamic_self_datasets(dataset_name, dataset_details, data_split, device)
     else:
         raise ValueError('Dataset type not recognized')
 

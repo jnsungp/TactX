@@ -19,5 +19,5 @@ model:
 
 
   use_language_conditioning: False
-  num_queries: 100
-  chunk_size: 100
+  num_queries: 64
+  chunk_size: 64

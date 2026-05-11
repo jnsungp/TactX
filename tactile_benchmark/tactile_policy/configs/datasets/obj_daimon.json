@@ -1,4 +1,4 @@
 {
-    "train": ["obj_daimon"],
-    "val": ["obj_daimon_val"]
+    "train": ["dai_dai_object_pnp"],
+    "val": ["dai_dai_object_pnp_val"]
 }

@@ -1,0 +1,4 @@
+{
+    "train": ["flexi_flexi_plug_insertion_direct"],
+    "val": ["flexi_flexi_plug_insertion_direct_val"]
+}

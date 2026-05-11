@@ -1,0 +1,4 @@
+{
+    "train": ["eflesh_eflesh_plug_insertion_direct"],
+    "val": ["eflesh_eflesh_plug_insertion_direct_val"]
+}

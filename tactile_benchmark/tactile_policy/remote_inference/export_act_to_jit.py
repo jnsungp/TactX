@@ -3,7 +3,7 @@
 Export ACT checkpoint to TorchScript for deployment.
 
 Usage:
-    python export_act_to_jit.py --policy_name pnp_tennis_ball_vis_cs16 --policy_config act_daimon_vis_v2
+    python export_act_to_jit.py --policy_name dai_dai_object_pnp_vis --policy_config act_daimon_vis
 """
 
 import dataclasses

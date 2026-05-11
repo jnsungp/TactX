@@ -1,5 +1,5 @@
 from joint_embedding_learning.data.datasets import get_all_contrastive_datasets
-from joint_embedding_learning.training import train
+from joint_embedding_learning.training import train, train_tri, train_tri_dynamic_pretrain
 import torch
 import os
 import yaml
@@ -16,6 +16,15 @@ if __name__ == '__main__':
     parser.add_argument('--device', type=str, default='cuda:0', help='Device to use')
     parser.add_argument('--run_name', type=str, default='', help='Name of the run')
     parser.add_argument('--debug', action='store_true', help='Debug mode')
+    parser.add_argument('--objects', nargs='+', default=None,
+                        help='Object names to train on (e.g. --objects cylinder plug). '
+                             'Requires per-object data layout. If omitted, all objects are used.')
+    parser.add_argument('--phase', choices=['dynamic_pretrain', 'paired'], default='paired',
+                        help='cross_modal_vae3: dynamic_pretrain (Stage 1, self-recon only) '
+                             'or paired (Stage 2 / default, full pair training).')
+    parser.add_argument('--resume_from', type=str, default=None,
+                        help='Optional path to a Stage 1 checkpoint to load weights from '
+                             'before Stage 2 paired training.')
 
     args = parser.parse_args()
 
@@ -54,12 +63,33 @@ if __name__ == '__main__':
     print(f"Checkpoint will be saved to: checkpoints/{dataset_details['dataset_type']}/{args.model_name}/{args.dataset_name}_run_{args.run_name}/")
 
     # Dataset loading
-    train_datasets, val_unseen_grasps, val_unseen_tools = get_all_contrastive_datasets(args.dataset_name, device=args.device)
+    train_datasets, val_unseen_grasps, val_unseen_tools = get_all_contrastive_datasets(
+        args.dataset_name, device=args.device, objects=args.objects,
+    )
 
-    validation_datasets = {
-        'val_unseen_grasps': val_unseen_grasps,
-        'val_unseen_tools': val_unseen_tools
-    }
-
-    # Model Training
-    train(train_datasets, validation_datasets, args.dataset_name, dataset_details, args.model_name, model_details, wandb, run_name=args.run_name, device=args.device)
+    # Model Training (dispatch on tri-modal vs. legacy pair model)
+    if args.model_name == 'cross_modal_vae3':
+        if args.phase == 'dynamic_pretrain':
+            # Stage 1: dynamic self-recon pretrain (unpaired). train_datasets is
+            # {'D': ds, 'E': ds, 'F': ds}; val_unseen_grasps is the matching val dict.
+            train_tri_dynamic_pretrain(
+                train_datasets, val_unseen_grasps, args.dataset_name,
+                dataset_details, args.model_name, model_details, wandb,
+                run_name=args.run_name, device=args.device,
+            )
+        else:
+            # Stage 2 (default): paired full training. train_datasets is
+            # {'de': ds, 'ef': ds, 'fd': ds}; val_unseen_grasps is matching val dict.
+            validation_datasets = {'val': val_unseen_grasps}
+            train_tri(
+                train_datasets, validation_datasets, args.dataset_name,
+                dataset_details, args.model_name, model_details, wandb,
+                run_name=args.run_name, device=args.device,
+                resume_from=args.resume_from,
+            )
+    else:
+        validation_datasets = {
+            'val_unseen_grasps': val_unseen_grasps,
+            'val_unseen_tools': val_unseen_tools
+        }
+        train(train_datasets, validation_datasets, args.dataset_name, dataset_details, args.model_name, model_details, wandb, run_name=args.run_name, device=args.device)

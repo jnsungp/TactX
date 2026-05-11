@@ -5,7 +5,7 @@ from simclr.modules import LARS as LARS_simclr
 import yaml
 from simclr.modules import NT_Xent
 from joint_embedding_learning.barlow_twins.barlow import BarlowLoss, LARS
-from joint_embedding_learning.utils.losses import CWCL, CrossModalVAELoss
+from joint_embedding_learning.utils.losses import CWCL, CrossModalVAELoss, CrossModalVAE3Loss
 
 
 def load_optimizer(args, model):
@@ -52,6 +52,12 @@ def get_loss(args, model_name):
             raise ValueError(f"Unknown loss '{loss_type}' for cross_modal (expected 'infonce' or 'cwcl')")
     elif model_name == 'cross_modal_vae':
         criterion = CrossModalVAELoss(
+            batch_size=args.batch_size,
+            temperature=args.temperature,
+            lambda_recon=getattr(args, 'lambda_recon', 1.0),
+        )
+    elif model_name == 'cross_modal_vae3':
+        criterion = CrossModalVAE3Loss(
             batch_size=args.batch_size,
             temperature=args.temperature,
             lambda_recon=getattr(args, 'lambda_recon', 1.0),

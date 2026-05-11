@@ -99,6 +99,68 @@ cross_modal_vae:
   logistic_batch_size: 256
   logistic_epochs: 20
 
+cross_modal_vae3:
+  # Tri-modal pair-only joint training (Daimon + eFlesh + FlexiTac).
+  # Each step samples one batch from each of de_pair / ef_pair / fd_pair and
+  # optimizes a single combined loss: 3-pair InfoNCE(mu) + 12-branch L1 recon
+  # + 6 KL terms. Shared N(0,I) prior anchors all three modalities into one
+  # latent space; the unobserved D-F pair is aligned transitively.
+  seed: 42
+  batch_size: 64
+  start_epoch: 0
+  epochs: 100
+  pretrain: True
+  learning_rate: 1.0e-4
+
+  # Daimon image encoder (ResNet)
+  resnet: "resnet18"
+
+  # eFlesh magnetic encoder (MLP)
+  magnetic_input_dim: 15
+  magnetic_hidden_dims: [64, 128, 256]
+
+  # FlexiTac small CNN encoder/decoder
+  flexitac_in_h: 12
+  flexitac_in_w: 16
+  flexitac_encoder_channels: [32, 64]
+  flexitac_pool_h: 6
+  flexitac_pool_w: 8
+  flexitac_decoder_channels: [64, 32]
+  flexitac_out_channels: 1
+
+  # projection head options (each modality outputs 2*projection_dim for (mu, logvar))
+  projection_dim: 16
+
+  # loss options
+  optimizer: "Adam"
+  weight_decay: 1.0e-4
+  temperature: 0.01
+
+  lambda_recon: 1.0
+  beta_max: 0.1
+  kl_warmup_epochs: 30
+
+  # InfoNCE curriculum: reconstruction-first, contrastive-later.
+  # InfoNCE weight α stays 0 until infonce_warmup_start, then linearly
+  # ramps from 0 → 1 over infonce_warmup_epochs.
+  infonce_warmup_start: 0
+  infonce_warmup_epochs: 0
+
+  # Stage 1 (dynamic_pretrain): self-recon only on unpaired dynamic data.
+  # dynamic_beta_max = 0 disables KL during Stage 1 (recon-only).
+  dynamic_epochs: 50
+  dynamic_beta_max: 0.1
+  dynamic_kl_warmup_epochs: 10
+
+  # Daimon decoder
+  image_out_channels: 3
+  image_out_size: 224
+  image_decoder_channels: [256, 128, 64, 32]
+  magnetic_decoder_hidden: [256, 128, 64]
+
+  logistic_batch_size: 256
+  logistic_epochs: 20
+
 barlow_twins:
   # train options
   seed: 42 # sacred handles automatic seeding when passed in the config
