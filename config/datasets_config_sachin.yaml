@@ -1,0 +1,55 @@
+# Sachin variant of dataset_cross_modal_tri_object — same data, same stats,
+# but with per-pair geometric corrections (rot180) applied at __getitem__
+# time. Used to align contact points across sensors when the original
+# preprocessed .pt files have wrong-axis mirroring baked in. Does not
+# modify the .pt files themselves.
+#
+# Per-pair corrections (rot180 = undo wrong fliplr + apply correct flipud):
+#   de_pair: rotate Daimon (sensor_a)
+#   ef_pair: rotate Flexi  (sensor_b)
+#   fd_pair: rotate Daimon (sensor_b) — verified visually with
+#            scripts/visualize_paired_episodes_v2.py --daimon_transform rot180
+#
+# Loaded by joint_embedding_learning/data/datasets_sachin.py.
+
+dataset_sachin:
+  dataset_type: 'cross_modal_tri'
+  data_root: 'latent_data_processed_object'
+
+  image_size: 224
+
+  daimon_transforms:
+    - 'resize'
+    - 'normalize'
+  daimon_stats:
+    mean: [0.091920, -0.043407, -0.045044]
+    std:  [0.230129, 0.136415, 0.112977]
+
+  eflesh_transforms:
+    - 'normalize'
+  eflesh_stats:
+    mean: [26.782779, -514.703113, 115.995235, -2023.415566, 7.838985, 1047.581115, 223.107125, 2531.489869, -1088.107298, -21.523144, -2981.299712, -30.560990, -1813.462424, -38.179990, 218.029818]
+    std:  [786.388902, 1407.679265, 598.348392, 2106.474565, 532.395415, 1565.877061, 654.217583, 2274.906212, 1613.502900, 663.628286, 2402.268524, 744.133281, 2340.596627, 331.950135, 697.778074]
+
+  flexitac_transforms:
+    - 'normalize'
+  flexitac_stats:
+    mean: 0.073024
+    std:  0.169825
+
+  pairs:
+    de:
+      sensor_a: 'daimon'
+      sensor_b: 'eflesh'
+      root:    'de_pair'
+      extra_transforms_a: ['rot180']   # rotate Daimon
+    ef:
+      sensor_a: 'eflesh'
+      sensor_b: 'flexi'
+      root:    'ef_pair'
+      extra_transforms_b: ['rot180']   # rotate Flexi
+    fd:
+      sensor_a: 'flexi'
+      sensor_b: 'daimon'
+      root:    'fd_pair'
+      extra_transforms_b: ['rot180']   # rotate Daimon (sensor_b in this pair)
