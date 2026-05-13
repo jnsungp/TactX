@@ -102,7 +102,7 @@ def main(args, base_dir):
 
     # get task parameters
     task_name = "hdt"
-    ckpt_dir = "checkpoints/" + args["exptid"] + "_ckpt"
+    ckpt_dir = "data/checkpoints/" + args["exptid"] + "_ckpt"
 
     camera_names = trainer_config['common']['camera_names']
     tactile_names = trainer_config['common']['tactile_names']

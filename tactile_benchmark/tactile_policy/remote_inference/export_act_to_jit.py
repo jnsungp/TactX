@@ -3,7 +3,9 @@
 Export ACT checkpoint to TorchScript for deployment.
 
 Usage:
-    python export_act_to_jit.py --policy_name dai_dai_object_pnp_vis --policy_config act_daimon_vis
+    python export_act_to_jit.py --policy_name eflesh_eflesh_plug_insertion_direct --policy_config act_eflesh
+    python export_act_to_jit.py --policy_name pnp_eflesh_cmlatent_mmd --policy_config act_cross_modal_pnp_z16
+    scp dataset_stats.pkl policy_jit.pt sachin@100.82.179.66:/media/ExtHDD/sachin/checkpoints/eflesh_eflesh_plug_insertion_direct_vis_ckpt
 """
 
 import dataclasses
@@ -23,7 +25,12 @@ from tactile_policy.modeling.modeling_act import ACTPolicy
 
 # Repo-relative defaults (override via env if needed)
 POLICY_PATH = str(
-    Path(os.environ.get("TACTILE_CHECKPOINTS_DIR", str(_TACTILE_BENCHMARK_ROOT / "checkpoints"))).resolve()
+    Path(
+        os.environ.get(
+            "TACTILE_CHECKPOINTS_DIR",
+            str(_TACTILE_BENCHMARK_ROOT / "data" / "checkpoints"),
+        )
+    ).resolve()
 ) + os.sep
 CONFIG_PATH = str(
     Path(os.environ.get("TACTILE_MODEL_CONFIGS_DIR", str(_TACTILE_POLICY_DIR / "configs" / "models"))).resolve()

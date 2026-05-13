@@ -157,15 +157,34 @@ model:
 
 ### Training
 
+Run from `tactile_benchmark/` (paths to configs and data are relative to that directory).
+
+**Cross-modal tactile latents (16-d FlexiTac episodes; HDF5 must already contain latent observations — see repo root `README.md` → *Latent conversion* and `scripts/convert_tac_to_latent.py`):**
+
 ```bash
-python tactile_policy/main.py \
+cd tactile_benchmark && \
+CUDA_VISIBLE_DEVICES=0 python tactile_policy/main.py \
+  --batch_size 8 \
+  --num_epochs 50000 \
+  --lr 1e-5 \
+  --chunk_size 64 \
+  --exptid pnp_flexi_cmlatent_mmd \
+  --dataset_json pnp_flexi_latent \
+  --model_cfg act_cross_modal_pnp_z16
+```
+
+**Raw FlexiTac array (MLP on flattened tactile):**
+
+```bash
+cd tactile_benchmark && \
+CUDA_VISIBLE_DEVICES=0 python tactile_policy/main.py \
   --batch_size 8 \
   --num_epochs 50000 \
   --lr 1e-4 \
   --chunk_size 64 \
   --exptid pnp_flexi_raw_mlp \
   --dataset_json pnp_flexi \
-  --model_cfg act_flexi \
+  --model_cfg act_flexi
 ```
 
 ## Worked example: pnp_tennis_ball (Daimon)

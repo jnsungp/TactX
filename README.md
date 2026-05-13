@@ -39,12 +39,14 @@ L = α · Σ_{p∈{DE,EF,FD}} L_InfoNCE(μ_a^p, μ_b^p)
 **Reconstruction-first curriculum (InfoNCE delayed warm-up):**  
 α stays 0 until `infonce_warmup_start`, then linearly ramps 0 → 1 over `infonce_warmup_epochs`. This lets each encoder first learn to pack contact information into the latent space via reconstruction before cross-modal alignment is introduced, preventing early contrastive collapse.
 
-| Epoch range | β (KL) | α (InfoNCE) | Dominant signal |
-| --- | --- | --- | --- |
-| 0 → `kl_warmup_epochs` | 0 → β_max | 0 | Reconstruction only |
-| `kl_warmup_epochs` → `infonce_warmup_start` | β_max | 0 | Recon + KL |
-| `infonce_warmup_start` → `+infonce_warmup_epochs` | β_max | 0 → 1 | Recon + KL + InfoNCE |
-| thereafter | β_max | 1 | All losses |
+
+| Epoch range                                       | β (KL)    | α (InfoNCE) | Dominant signal      |
+| ------------------------------------------------- | --------- | ----------- | -------------------- |
+| 0 → `kl_warmup_epochs`                            | 0 → β_max | 0           | Reconstruction only  |
+| `kl_warmup_epochs` → `infonce_warmup_start`       | β_max     | 0           | Recon + KL           |
+| `infonce_warmup_start` → `+infonce_warmup_epochs` | β_max     | 0 → 1       | Recon + KL + InfoNCE |
+| thereafter                                        | β_max     | 1           | All losses           |
+
 
 
 | Term                         | Applied to         | Role                                          |
@@ -130,12 +132,37 @@ checkpoints/cross_modal/cross_modal_vae3/dataset_cross_modal_tri{_object}_run_{r
   model_details.yaml
 ```
 
-#### 2-Stage training with dynamic OOD pretrain
+#### Joint training: Paired + Dynamic self-recon
 
-For OOD (e.g. dynamic motion) inference, the encoder can be aligned to the
-dynamic distribution first via self-reconstruction on **unpaired** dynamic data
-(`latent_data_processed_object/dynamic_data/{daimon,eflesh,flexi}/`), then
-fine-tuned on the paired data with the full contrastive + reconstruction loss.
+Every step runs two loss terms jointly for all epochs:
+
+1. **Paired** (InfoNCE + 4-branch self/cross recon + KL) on paired data
+2. **Dynamic self-recon** on unpaired dynamic data (`latent_data_processed_object/dynamic_data/`)
+
+```bash
+python scripts/train_model.py \
+    --model_name cross_modal_vae3 \
+    --dataset_name dataset_cross_modal_tri_object \
+    --dynamic_dataset_name dataset_cross_modal_tri_dynamic \
+    --phase joint \
+    --objects cylinder plug \
+    --device cuda:0 \
+    --run_name joint_cyl_plug
+```
+
+Joint-phase hyperparameters (`config/models_config.yaml`):
+
+
+| Parameter              | Default | Description                                      |
+| ---------------------- | ------- | ------------------------------------------------ |
+| `lambda_dynamic_recon` | 1.0     | Weight for dynamic self-recon loss               |
+| `beta_max`             | 0.1     | KL weight (shared for paired + dynamic KL terms) |
+| `kl_warmup_epochs`     | 30      | Linear KL warm-up window                         |
+
+
+Total loss: `L = L_paired(α·InfoNCE + λ·Recon + β·KL) + λ_dyn·L_dyn_recon + β·L_dyn_KL`
+
+#### 2-Stage training with dynamic OOD pretrain (legacy)
 
 ```bash
 # Stage 1: dynamic self-recon pretrain (no InfoNCE, no cross-recon)
@@ -156,16 +183,6 @@ python scripts/train_model.py \
     --device cuda:0 \
     --run_name tri_cyl_plug_dynpre
 ```
-
-Stage-1 hyperparameters (`config/models_config.yaml`):
-
-| Parameter                  | Default | Description                                                       |
-| -------------------------- | ------- | ----------------------------------------------------------------- |
-| `dynamic_epochs`           | 50      | Number of Stage 1 epochs                                          |
-| `dynamic_beta_max`         | 0.1     | KL weight after warm-up (set 0 to disable KL during Stage 1)      |
-| `dynamic_kl_warmup_epochs` | 10      | Linear KL warm-up window for Stage 1                              |
-
-Stage 1 trains only `L = λ_recon · (L_D→D + L_E→E + L_F→F) + β · (KL_D + KL_E + KL_F)`. No InfoNCE, no cross-recon. Stage 2 resumes the full curriculum (`α` InfoNCE warm-up, `β` KL warm-up, 4-branch per-pair recon) using the Stage 1 weights as initialisation.
 
 ### CrossModalVAE (2-sensor: Daimon + eFlesh)
 
@@ -195,19 +212,22 @@ checkpoints/cross_modal/cross_modal_vae/dataset_cross_modal_run_{run_name}_{time
 
 #### CrossModalVAE3
 
-| Parameter               | Default | Description                                                        |
-| ----------------------- | ------- | ------------------------------------------------------------------ |
+
+| Parameter               | Default | Description                                                       |
+| ----------------------- | ------- | ----------------------------------------------------------------- |
 | `lambda_recon`          | 1.0     | Weight for 4-branch L1 reconstruction loss (×3 pairs)             |
-| `beta_max`              | 0.1     | Maximum KL weight after warm-up                                    |
+| `beta_max`              | 0.1     | Maximum KL weight after warm-up                                   |
 | `kl_warmup_epochs`      | 30      | Epochs to linearly ramp β from 0 → `beta_max`                     |
 | `infonce_warmup_start`  | 50      | Epoch at which InfoNCE weight α begins to ramp up (0 before this) |
 | `infonce_warmup_epochs` | 50      | Epochs to linearly ramp α from 0 → 1                              |
 | `temperature`           | 0.01    | NT-Xent temperature applied to μ vectors                          |
-| `projection_dim`        | 16      | Shared latent space dimension                                      |
-| `batch_size`            | 64      | Training batch size                                                |
-| `learning_rate`         | 1e-4    | Adam optimizer learning rate                                       |
+| `projection_dim`        | 16      | Shared latent space dimension                                     |
+| `batch_size`            | 64      | Training batch size                                               |
+| `learning_rate`         | 1e-4    | Adam optimizer learning rate                                      |
+
 
 #### CrossModalVAE
+
 
 | Parameter          | Default | Description                                                     |
 | ------------------ | ------- | --------------------------------------------------------------- |
@@ -321,5 +341,19 @@ python scripts/convert_tac_to_latent.py \
     --model_name cross_modal_vae \
     --latent_type mu \   # mu | z | h
     --device cuda:0
+```
+
+**ACT policy on latent tactile (example: FlexiTac pick-and-place, 16-d latents).** Run from `tactile_benchmark/`; dataset splits are defined in `tactile_benchmark/tactile_policy/configs/datasets/pnp_flexi_latent.json`. More examples (Daimon, export, eval) are in [tactile_benchmark/README.md](tactile_benchmark/README.md).
+
+```bash
+cd tactile_benchmark && \
+CUDA_VISIBLE_DEVICES=0 python tactile_policy/main.py \
+  --batch_size 8 \
+  --num_epochs 50000 \
+  --lr 1e-5 \
+  --chunk_size 64 \
+  --exptid pnp_flexi_cmlatent_mmd \
+  --dataset_json pnp_flexi_latent \
+  --model_cfg act_cross_modal_pnp_z16
 ```
 
