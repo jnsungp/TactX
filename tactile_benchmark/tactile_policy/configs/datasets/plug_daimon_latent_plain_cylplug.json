@@ -1,0 +1,4 @@
+{
+    "train": ["dai_dai_plug_insertion_direct_latent_plain_cylplug"],
+    "val": ["dai_dai_plug_insertion_direct_val_latent_plain_cylplug"]
+}

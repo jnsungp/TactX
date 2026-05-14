@@ -1,4 +1,4 @@
-from torch.utils.data import Dataset, random_split, Subset
+from torch.utils.data import Dataset, random_split, Subset, ConcatDataset
 import torchvision
 from torchvision import transforms
 from joint_embedding_learning.utils.dataset_management import sort_order, get_images_from_full_data, get_transformations
@@ -617,6 +617,9 @@ def get_dynamic_self_datasets(dataset_name, dataset_details, data_split='train',
         empty_test     : {}
     """
     data_root = dataset_details['data_root']
+    # Allow a list of roots so one dataset entry can pool e.g. cylinder + plug
+    # dynamic data: data_root: ['.../cylinder', '.../plug'].
+    data_roots = [data_root] if isinstance(data_root, str) else list(data_root)
     image_size = dataset_details.get('image_size', 224)
     sensors = dataset_details.get('sensors', {'D': 'daimon', 'E': 'eflesh', 'F': 'flexi'})
     train_frac = float(dataset_details.get('train_frac', 0.8))
@@ -626,12 +629,15 @@ def get_dynamic_self_datasets(dataset_name, dataset_details, data_split='train',
 
     for key, sensor_name in sensors.items():
         transform, mean, std = _build_sensor_transforms(dataset_details, sensor_name, image_size)
-        sensor_root = os.path.join(data_root, sensor_name)
-        ds_full = DynamicSelfDataset(
-            sensor_root, sensor_name,
-            transform=transform, mean=mean, std=std,
-            device=device,
-        )
+        per_root = [
+            DynamicSelfDataset(
+                os.path.join(dr, sensor_name), sensor_name,
+                transform=transform, mean=mean, std=std,
+                device=device,
+            )
+            for dr in data_roots
+        ]
+        ds_full = per_root[0] if len(per_root) == 1 else ConcatDataset(per_root)
         n = len(ds_full)
         train_len = int(train_frac * n)
         val_len = n - train_len

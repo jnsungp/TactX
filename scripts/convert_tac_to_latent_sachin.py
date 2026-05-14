@@ -235,6 +235,12 @@ def main():
                         help='Optional geometric correction at inference. Apply '
                              'if teleop data orientation differs from the '
                              'training-time canonical (after sachin per-pair rot180).')
+    parser.add_argument('--stats_dataset_name', type=str, default=None,
+                        help='If given, pull *_stats from this entry in '
+                             'config/datasets_config.yaml instead of the '
+                             'checkpoint-saved (static) dataset_details. Use '
+                             'this when converting teleop / dynamic-regime data '
+                             '(e.g. dataset_cross_modal_tri_dynamic_all).')
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -245,6 +251,21 @@ def main():
     with open(os.path.join(args.checkpoint_dir, 'dataset_details.yaml')) as f:
         dataset_details = yaml.safe_load(f)
     image_size = dataset_details.get('image_size', 224)
+
+    # Optional override: replace *_stats and image_size with values from
+    # another dataset entry (e.g. dynamic stats for teleop conversion).
+    if args.stats_dataset_name:
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(repo_root, 'config', 'datasets_config.yaml')) as f:
+            cfg = yaml.safe_load(f)
+        if args.stats_dataset_name not in cfg:
+            raise KeyError(f"{args.stats_dataset_name!r} not in datasets_config.yaml")
+        override = cfg[args.stats_dataset_name]
+        for k in ('daimon_stats', 'eflesh_stats', 'flexitac_stats', 'image_size'):
+            if k in override:
+                dataset_details[k] = override[k]
+        image_size = dataset_details.get('image_size', 224)
+        print(f"[stats override] using {args.stats_dataset_name} for *_stats")
 
     model = get_model('cross_modal_vae3', model_details).to(args.device)
     ckpt = torch.load(os.path.join(args.checkpoint_dir, 'model.pt'),
