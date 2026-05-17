@@ -5,7 +5,7 @@ from simclr.modules import LARS as LARS_simclr
 import yaml
 from simclr.modules import NT_Xent
 from joint_embedding_learning.barlow_twins.barlow import BarlowLoss, LARS
-from joint_embedding_learning.utils.losses import CWCL, CrossModalVAELoss, CrossModalVAE3Loss
+from joint_embedding_learning.utils.losses import CWCL, CrossModalVAELoss, CrossModalVAE3Loss, CrossModalVAE3UniforceLoss
 
 
 def load_optimizer(args, model):
@@ -57,11 +57,26 @@ def get_loss(args, model_name):
             lambda_recon=getattr(args, 'lambda_recon', 1.0),
         )
     elif model_name == 'cross_modal_vae3':
-        criterion = CrossModalVAE3Loss(
-            batch_size=args.batch_size,
-            temperature=args.temperature,
-            lambda_recon=getattr(args, 'lambda_recon', 1.0),
-        )
+        # Alignment objective: 'infonce' (default, contrastive) or
+        # 'uniforce'/'l2' (plain L2 pull between paired means).
+        loss_type = getattr(args, 'loss', 'infonce')
+        if loss_type in ('uniforce', 'l2'):
+            criterion = CrossModalVAE3UniforceLoss(
+                batch_size=args.batch_size,
+                temperature=args.temperature,
+                lambda_recon=getattr(args, 'lambda_recon', 1.0),
+            )
+        elif loss_type == 'infonce':
+            criterion = CrossModalVAE3Loss(
+                batch_size=args.batch_size,
+                temperature=args.temperature,
+                lambda_recon=getattr(args, 'lambda_recon', 1.0),
+            )
+        else:
+            raise ValueError(
+                f"Unknown loss '{loss_type}' for cross_modal_vae3 "
+                f"(expected 'infonce', 'uniforce', or 'l2')"
+            )
     else:
         raise ValueError(f"Model {model_name} not found")
     return criterion

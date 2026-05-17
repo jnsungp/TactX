@@ -54,3 +54,68 @@ dataset_sachin:
       sensor_b: 'daimon'
       root:    'fd_pair'
       extra_transforms_b: ['rot180']   # rotate Daimon (sensor_b in this pair)
+
+# ============================================================
+# New paired-static dataset: latent_data_processed_static.
+# Same pair layout / same per-pair rot180 corrections as dataset_sachin
+# (data is "the same format" per upstream), but a different root and a
+# larger object set:
+#   circle, cylinder, ellipse, eraser, large_ball, line, plug,
+#   small_ball, spam, triangle   (10 objects)
+# No dynamic_data here — paired static only. Train via:
+#   python scripts/train_static_sachin.py --dataset_name dataset_sachin_static \
+#       --objects circle cylinder ellipse eraser large_ball line plug \
+#                 small_ball spam triangle
+#
+# Stats below are carried over from dataset_sachin (combined cyl+plug) as a
+# usable placeholder. RECOMPUTE for this dataset's objects once all data
+# (incl. ef_pair / fd_pair FlexiTac) has landed:
+#   python scripts/compute_per_object_stats.py \
+#       --data_root latent_data_processed_static --splits static \
+#       --objects circle cylinder ellipse eraser large_ball line plug \
+#                 small_ball spam triangle
+# then paste combined_static into the *_stats blocks below.
+# ============================================================
+dataset_sachin_static:
+  dataset_type: 'cross_modal_tri'
+  data_root: 'latent_data_processed_static'
+
+  image_size: 224
+
+  # Pooled stats over all 10 objects — per_object_stats.yaml::combined_static
+  # (computed with --data_root latent_data_processed_static --splits static).
+  daimon_transforms:
+    - 'resize'
+    - 'normalize'
+  daimon_stats:
+    mean: [0.075014, -0.010031, -0.017616]
+    std:  [0.219750, 0.102873, 0.097109]
+
+  eflesh_transforms:
+    - 'normalize'
+  eflesh_stats:
+    mean: [69.437294, -426.549347, 59.903320, -1270.780884, 10.988364, 791.361084, 147.556244, 1796.225708, -947.175781, -67.622604, -2064.793701, -28.065138, -1190.421387, -51.636059, 89.614563]
+    std:  [680.086060, 1364.270508, 517.791931, 1804.439331, 484.050659, 1545.929688, 595.985901, 2031.554932, 1672.495728, 592.037659, 2192.061768, 738.748596, 2003.141113, 318.000000, 530.152588]
+
+  flexitac_transforms:
+    - 'normalize'
+  flexitac_stats:
+    mean: 0.094457
+    std:  0.182583
+
+  pairs:
+    de:
+      sensor_a: 'daimon'
+      sensor_b: 'eflesh'
+      root:    'de_pair'
+      extra_transforms_a: ['rot180']   # rotate Daimon
+    ef:
+      sensor_a: 'eflesh'
+      sensor_b: 'flexi'
+      root:    'ef_pair'
+      extra_transforms_b: ['rot180']   # rotate Flexi
+    fd:
+      sensor_a: 'flexi'
+      sensor_b: 'daimon'
+      root:    'fd_pair'
+      extra_transforms_b: ['rot180']   # rotate Daimon (sensor_b in this pair)

@@ -160,9 +160,21 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--objects', nargs='+', default=['cylinder', 'plug'])
     parser.add_argument('--splits', nargs='+', default=['static', 'dynamic'])
+    parser.add_argument('--data_root', default=None,
+                        help='Data root relative to repo (default: '
+                             'latent_data_processed_object). Use '
+                             'latent_data_processed_static for the new '
+                             'paired-static dataset. Note: that dir has no '
+                             'dynamic_data, so pass --splits static there.')
     parser.add_argument('--out', default='per_object_stats.yaml',
                         help='Path (relative to repo root) for the YAML dump.')
     args = parser.parse_args()
+
+    # Optional data-root override (additive — default behavior unchanged).
+    if args.data_root:
+        global DATA_ROOT
+        DATA_ROOT = os.path.join(REPO_ROOT, args.data_root)
+        print(f"[data_root override] {DATA_ROOT}")
 
     all_stats = {}
     for obj in args.objects:
