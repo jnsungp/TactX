@@ -139,12 +139,14 @@ class CrossModalVAE3Loss(nn.Module):
             return recon.unsqueeze(1)
         return recon
 
-    def forward(self, outs, targets, beta=0.0, alpha=1.0):
+    def forward(self, outs, targets, beta=0.0, alpha=1.0, meta=None):
         """
         Args:
             alpha: InfoNCE weight (0→1 curriculum). When 0 the model trains
                    reconstruction-only so the latent space captures contact
                    information before contrastive alignment is introduced.
+            meta: accepted and ignored — kept so all tri losses share one
+                  call signature (CWCL uses it).
         """
         info_per_pair = {}
         recon_per_pair = {}
@@ -250,11 +252,13 @@ class CrossModalVAE3UniforceLoss(nn.Module):
             return recon.unsqueeze(1)
         return recon
 
-    def forward(self, outs, targets, beta=0.0, alpha=1.0):
+    def forward(self, outs, targets, beta=0.0, alpha=1.0, meta=None):
         """
         Args:
             alpha: alignment weight (0→1 curriculum). When 0 the model trains
                    reconstruction-only, identical to the InfoNCE variant.
+            meta: accepted and ignored — kept so all tri losses share one
+                  call signature (CWCL uses it).
         """
         info_per_pair = {}
         recon_per_pair = {}
@@ -441,3 +445,139 @@ def cwcl_weight_stats(tool_ids, episode_ids, frame_ids, sigma=5.0, same_episode_
         'cwcl_offdiag_mass_mean': off_mass.mean().item(),
         'cwcl_effective_pos_mean': eff_pos.mean().item(),
     }
+
+
+class CrossModalVAE3CWCLLoss(nn.Module):
+    """Tri-modal VAE loss for CrossModalVAE3 — 'cwcl' variant.
+
+    Identical to CrossModalVAE3Loss EXCEPT the cross-modal alignment term:
+    instead of pair-wise InfoNCE (NT-Xent, only the diagonal is positive) it
+    uses pair-wise CWCL — soft positives for nearby same-(object,episode)
+    frames, weighted by frame distance (see the CWCL class above).
+
+        L_align = sum_{p in {de,ef,fd}}  CWCL(mu_a^p, mu_b^p, meta^p)
+
+    Recon (4× L1 per pair) and KL are unchanged.
+
+        Loss = alpha * L_align
+             + lambda_recon * sum_p (L1 recon, 4 branches)
+             + beta        * sum_p (KL_a + KL_b)
+
+    CWCL ⊇ InfoNCE: with sigma→0 the soft-weight matrix collapses to identity
+    and this reduces exactly to CrossModalVAE3Loss. So CWCL *replaces* the
+    contrastive objective — do not also add InfoNCE.
+
+    Requires `meta`: a dict {pair: (object_ids, episode_ids, frame_ids)}, each
+    a (B,) long tensor for that pair's batch. Pass an episode-aware batch
+    sampler (EpisodeChunkBatchSampler) — otherwise batches rarely contain
+    same-episode frames and CWCL silently degrades to InfoNCE. The returned
+    info dict carries `cwcl_offdiag_mass_*` / `cwcl_effective_pos_*` so you
+    can verify the soft positives are actually firing.
+
+    Output dict keeps the CrossModalVAE3Loss keys (`infonce`, `infonce_{pair}`,
+    `alpha_infonce`, ...) so the tri training / val / logging code is unchanged
+    — those keys carry the CWCL value.
+    """
+
+    PAIR_NAMES = ("de", "ef", "fd")
+
+    def __init__(self, batch_size=None, temperature=0.5, lambda_recon=1.0,
+                 cwcl_sigma=5.0, cwcl_same_episode_only=True):
+        super().__init__()
+        self.lambda_recon = float(lambda_recon)
+        self.cwcl_sigma = float(cwcl_sigma)
+        self.cwcl_same_episode_only = bool(cwcl_same_episode_only)
+        # CWCL is stateless — one instance serves all three pairs.
+        self.cwcl = CWCL(temperature=temperature, sigma=cwcl_sigma,
+                         same_episode_only=cwcl_same_episode_only)
+
+    @staticmethod
+    def _shape_match(recon, target):
+        if recon.shape == target.shape:
+            return recon
+        if recon.dim() == target.dim() + 1 and recon.shape[1] == 1:
+            return recon.squeeze(1)
+        if target.dim() == recon.dim() + 1 and target.shape[1] == 1:
+            return recon.unsqueeze(1)
+        return recon
+
+    def forward(self, outs, targets, beta=0.0, alpha=1.0, meta=None):
+        """
+        Args:
+            meta: dict {pair: (object_ids, episode_ids, frame_ids)}. Required.
+            alpha: alignment weight (0->1 curriculum). alpha=0 -> recon-only.
+        """
+        if meta is None:
+            raise ValueError(
+                "CrossModalVAE3CWCLLoss requires `meta` "
+                "{pair: (object_ids, episode_ids, frame_ids)}; got None."
+            )
+
+        info_per_pair = {}
+        recon_per_pair = {}
+        kl_per_sensor_pair = {}
+        cwcl_stats = {}
+
+        L_info_total = 0.0
+        L_recon_total = 0.0
+        L_kl_total = 0.0
+
+        for pair in self.PAIR_NAMES:
+            out = outs[pair]
+            x_a, x_b = targets[pair]
+            mu_a, mu_b = out["mu_a"], out["mu_b"]
+            logvar_a, logvar_b = out["logvar_a"], out["logvar_b"]
+
+            if pair not in meta:
+                raise ValueError(f"meta is missing pair '{pair}'")
+            obj_ids, ep_ids, fr_ids = meta[pair]
+
+            # --- cwcl: soft-weighted contrastive alignment ---
+            L_info = self.cwcl(mu_a, mu_b, (obj_ids, ep_ids, fr_ids))
+            L_info_total = L_info_total + L_info
+            info_per_pair[pair] = L_info.detach()
+            # diagnostics: how much soft-positive mass the batch actually had.
+            cwcl_stats[pair] = cwcl_weight_stats(
+                obj_ids, ep_ids, fr_ids,
+                sigma=self.cwcl_sigma,
+                same_episode_only=self.cwcl_same_episode_only,
+            )
+
+            r_aa = F.l1_loss(self._shape_match(out["recon_aa"], x_a), x_a)
+            r_ba = F.l1_loss(self._shape_match(out["recon_ba"], x_a), x_a)
+            r_bb = F.l1_loss(self._shape_match(out["recon_bb"], x_b), x_b)
+            r_ab = F.l1_loss(self._shape_match(out["recon_ab"], x_b), x_b)
+            L_recon_pair = r_aa + r_ba + r_bb + r_ab
+            L_recon_total = L_recon_total + L_recon_pair
+            recon_per_pair[pair] = {
+                "total": L_recon_pair.detach(),
+                "recon_aa": r_aa.detach(), "recon_ba": r_ba.detach(),
+                "recon_bb": r_bb.detach(), "recon_ab": r_ab.detach(),
+            }
+
+            kl_a = kl_divergence_standard(mu_a, logvar_a)
+            kl_b = kl_divergence_standard(mu_b, logvar_b)
+            L_kl_total = L_kl_total + kl_a + kl_b
+            kl_per_sensor_pair[f"{pair}_a"] = kl_a.detach()
+            kl_per_sensor_pair[f"{pair}_b"] = kl_b.detach()
+
+        total = alpha * L_info_total + self.lambda_recon * L_recon_total + beta * L_kl_total
+
+        info = {
+            "total": total,
+            "infonce": L_info_total.detach(),          # carries CWCL value
+            "recon": L_recon_total.detach(),
+            "kl": L_kl_total.detach() if torch.is_tensor(L_kl_total) else torch.tensor(float(L_kl_total)),
+            "beta": torch.tensor(float(beta)),
+            "alpha_infonce": torch.tensor(float(alpha)),
+        }
+        for pair in self.PAIR_NAMES:
+            info[f"infonce_{pair}"] = info_per_pair[pair]
+            info[f"recon_{pair}"] = recon_per_pair[pair]["total"]
+            for k in ("recon_aa", "recon_ba", "recon_bb", "recon_ab"):
+                info[f"{k}_{pair}"] = recon_per_pair[pair][k]
+            for sk, sv in cwcl_stats[pair].items():
+                info[f"{sk}_{pair}"] = torch.tensor(float(sv))
+        for k, v in kl_per_sensor_pair.items():
+            info[f"kl_{k}"] = v
+        return info

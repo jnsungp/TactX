@@ -5,7 +5,7 @@ from simclr.modules import LARS as LARS_simclr
 import yaml
 from simclr.modules import NT_Xent
 from joint_embedding_learning.barlow_twins.barlow import BarlowLoss, LARS
-from joint_embedding_learning.utils.losses import CWCL, CrossModalVAELoss, CrossModalVAE3Loss, CrossModalVAE3UniforceLoss
+from joint_embedding_learning.utils.losses import CWCL, CrossModalVAELoss, CrossModalVAE3Loss, CrossModalVAE3UniforceLoss, CrossModalVAE3CWCLLoss
 
 
 def load_optimizer(args, model):
@@ -57,14 +57,23 @@ def get_loss(args, model_name):
             lambda_recon=getattr(args, 'lambda_recon', 1.0),
         )
     elif model_name == 'cross_modal_vae3':
-        # Alignment objective: 'infonce' (default, contrastive) or
-        # 'uniforce'/'l2' (plain L2 pull between paired means).
+        # Alignment objective: 'infonce' (default, contrastive),
+        # 'uniforce'/'l2' (plain L2 pull), or 'cwcl' (soft-weighted
+        # contrastive — needs an episode-aware batch sampler).
         loss_type = getattr(args, 'loss', 'infonce')
         if loss_type in ('uniforce', 'l2'):
             criterion = CrossModalVAE3UniforceLoss(
                 batch_size=args.batch_size,
                 temperature=args.temperature,
                 lambda_recon=getattr(args, 'lambda_recon', 1.0),
+            )
+        elif loss_type == 'cwcl':
+            criterion = CrossModalVAE3CWCLLoss(
+                batch_size=args.batch_size,
+                temperature=args.temperature,
+                lambda_recon=getattr(args, 'lambda_recon', 1.0),
+                cwcl_sigma=getattr(args, 'cwcl_sigma', 5.0),
+                cwcl_same_episode_only=getattr(args, 'cwcl_same_episode_only', True),
             )
         elif loss_type == 'infonce':
             criterion = CrossModalVAE3Loss(
@@ -75,17 +84,22 @@ def get_loss(args, model_name):
         else:
             raise ValueError(
                 f"Unknown loss '{loss_type}' for cross_modal_vae3 "
-                f"(expected 'infonce', 'uniforce', or 'l2')"
+                f"(expected 'infonce', 'uniforce', 'l2', or 'cwcl')"
             )
     else:
         raise ValueError(f"Model {model_name} not found")
     return criterion
 
-def save_model(model, dataset_name, dataset_type, model_type, dataset_details, model_details, run_name=""):
+def save_model(model, dataset_name, dataset_type, model_type, dataset_details, model_details, run_name="", tag=None):
     path_out = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'checkpoints', dataset_type, model_type, dataset_name +"_run_" + run_name)
     if not os.path.exists(path_out):
         os.makedirs(path_out)
     torch.save(model.state_dict(), os.path.join(path_out, "model.pt"))
+
+    # Periodic weight snapshot (kept, not overwritten) — e.g. tag='ep150'.
+    # Only the weights; the yamls below are identical across epochs.
+    if tag is not None:
+        torch.save(model.state_dict(), os.path.join(path_out, f"model_{tag}.pt"))
 
     # Save dataset details as yaml file
     dataset_details_path = os.path.join(path_out, "dataset_details.yaml")

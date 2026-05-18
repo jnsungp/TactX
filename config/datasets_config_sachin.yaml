@@ -119,3 +119,209 @@ dataset_sachin_static:
       sensor_b: 'daimon'
       root:    'fd_pair'
       extra_transforms_b: ['rot180']   # rotate Daimon (sensor_b in this pair)
+
+# ============================================================
+# Deform-only Daimon variant of dataset_sachin_static.
+# Identical to dataset_sachin_static EXCEPT daimon_transforms adds
+# 'deform_only': the loader keeps Daimon channel 0 (normal deformation),
+# drops the 2 shear channels, and replicates ch0 -> 3 grayscale-deform
+# channels. daimon_stats are unchanged (real 3-channel stats) — z-score
+# runs on the real image before ch0 is selected, so ch0 is normalized
+# with ch0's stats correctly. Same data, same pairs, same rot180.
+# ============================================================
+dataset_sachin_static_deform:
+  dataset_type: 'cross_modal_tri'
+  data_root: 'latent_data_processed_static'
+
+  image_size: 224
+
+  daimon_transforms:
+    - 'resize'
+    - 'normalize'
+    - 'deform_only'
+  daimon_stats:
+    mean: [0.075014, -0.010031, -0.017616]
+    std:  [0.219750, 0.102873, 0.097109]
+
+  eflesh_transforms:
+    - 'normalize'
+  eflesh_stats:
+    mean: [69.437294, -426.549347, 59.903320, -1270.780884, 10.988364, 791.361084, 147.556244, 1796.225708, -947.175781, -67.622604, -2064.793701, -28.065138, -1190.421387, -51.636059, 89.614563]
+    std:  [680.086060, 1364.270508, 517.791931, 1804.439331, 484.050659, 1545.929688, 595.985901, 2031.554932, 1672.495728, 592.037659, 2192.061768, 738.748596, 2003.141113, 318.000000, 530.152588]
+
+  flexitac_transforms:
+    - 'normalize'
+  flexitac_stats:
+    mean: 0.094457
+    std:  0.182583
+
+  pairs:
+    de:
+      sensor_a: 'daimon'
+      sensor_b: 'eflesh'
+      root:    'de_pair'
+      extra_transforms_a: ['rot180']   # rotate Daimon
+    ef:
+      sensor_a: 'eflesh'
+      sensor_b: 'flexi'
+      root:    'ef_pair'
+      extra_transforms_b: ['rot180']   # rotate Flexi
+    fd:
+      sensor_a: 'flexi'
+      sensor_b: 'daimon'
+      root:    'fd_pair'
+      extra_transforms_b: ['rot180']   # rotate Daimon (sensor_b in this pair)
+
+# ============================================================
+# Dynamic pnp dataset — latent_data_processed_dynamic/pnp.
+# Same paired-static format (de/ef/fd, single object 'pnp'), same per-pair
+# rot180. Stats are kept identical to dataset_sachin_static so z-scoring
+# matches what scratch11_shear_efs3 was trained with (do NOT recompute —
+# the model expects its training-time normalization).
+# ============================================================
+dataset_sachin_dynamic_pnp:
+  dataset_type: 'cross_modal_tri'
+  data_root: 'latent_data_processed_dynamic/pnp'
+
+  image_size: 224
+
+  daimon_transforms:
+    - 'resize'
+    - 'normalize'
+  daimon_stats:
+    mean: [0.075014, -0.010031, -0.017616]
+    std:  [0.219750, 0.102873, 0.097109]
+
+  eflesh_transforms:
+    - 'normalize'
+  eflesh_stats:
+    mean: [69.437294, -426.549347, 59.903320, -1270.780884, 10.988364, 791.361084, 147.556244, 1796.225708, -947.175781, -67.622604, -2064.793701, -28.065138, -1190.421387, -51.636059, 89.614563]
+    std:  [680.086060, 1364.270508, 517.791931, 1804.439331, 484.050659, 1545.929688, 595.985901, 2031.554932, 1672.495728, 592.037659, 2192.061768, 738.748596, 2003.141113, 318.000000, 530.152588]
+
+  flexitac_transforms:
+    - 'normalize'
+  flexitac_stats:
+    mean: 0.094457
+    std:  0.182583
+
+  pairs:
+    de:
+      sensor_a: 'daimon'
+      sensor_b: 'eflesh'
+      root:    'de_pair'
+      extra_transforms_a: ['rot180']   # rotate Daimon
+    ef:
+      sensor_a: 'eflesh'
+      sensor_b: 'flexi'
+      root:    'ef_pair'
+      extra_transforms_b: ['rot180']   # rotate Flexi
+    fd:
+      sensor_a: 'flexi'
+      sensor_b: 'daimon'
+      root:    'fd_pair'
+      extra_transforms_b: ['rot180']   # rotate Daimon (sensor_b in this pair)
+
+# ============================================================
+# 12-object static dataset — latent_data_processed_static, objects:
+#   circle cylinder ellipse eraser large_ball line plug small_ball
+#   spam triangle shear no_contact_threshold
+# Same pair layout / rot180 as dataset_sachin_static, but stats are
+# combined_static recomputed over ALL 12 objects
+# (per_object_stats.yaml::combined_static). The shear object roughly
+# doubles the Daimon shear-channel (ch1/ch2) std vs the 10-object pool.
+# ============================================================
+dataset_sachin_static12:
+  dataset_type: 'cross_modal_tri'
+  data_root: 'latent_data_processed_static'
+
+  # Episode-level train/val split (whole episodes held out — no near-duplicate
+  # leakage). Other dataset entries omit this key -> default frame-level split.
+  episode_val_split: true
+
+  image_size: 224
+
+  daimon_transforms:
+    - 'resize'
+    - 'normalize'
+  daimon_stats:
+    mean: [0.068795, -0.001895, -0.008578]
+    std:  [0.205663, 0.249837, 0.248479]
+
+  eflesh_transforms:
+    - 'normalize'
+  eflesh_stats:
+    mean: [24.501642, -350.678070, 43.907925, -1242.634277, 16.994249, 685.652405, 116.613220, 1696.147827, -856.663696, -62.472942, -2021.795288, -105.722397, -1106.986816, -41.088001, 104.477585]
+    std:  [829.504089, 1248.281860, 596.034790, 1630.981567, 484.513275, 1413.057983, 590.679871, 1823.940918, 1565.082153, 748.707703, 2070.673828, 1184.044189, 1731.826172, 308.732666, 814.720520]
+
+  flexitac_transforms:
+    - 'normalize'
+  flexitac_stats:
+    mean: 0.092803
+    std:  0.182347
+
+  pairs:
+    de:
+      sensor_a: 'daimon'
+      sensor_b: 'eflesh'
+      root:    'de_pair'
+      extra_transforms_a: ['rot180']
+    ef:
+      sensor_a: 'eflesh'
+      sensor_b: 'flexi'
+      root:    'ef_pair'
+      extra_transforms_b: ['rot180']
+    fd:
+      sensor_a: 'flexi'
+      sensor_b: 'daimon'
+      root:    'fd_pair'
+      extra_transforms_b: ['rot180']
+
+# ============================================================
+# latent_data_processed_dynamic/pnp with plain_cyl's TRAINING stats.
+# For evaluating the dataset_sachin_run_dynalign_plain_cyl checkpoint on the
+# dynamic-pnp data: that model was trained with cylinder-era stats, so the
+# eval must z-score with the SAME stats (taken verbatim from plain_cyl's
+# saved dataset_details.yaml) — not the 10/12-object combined stats.
+# Same de/ef/fd layout + rot180.
+# ============================================================
+dataset_sachin_dynamic_pnp_cylstats:
+  dataset_type: 'cross_modal_tri'
+  data_root: 'latent_data_processed_dynamic/pnp'
+
+  image_size: 224
+
+  daimon_transforms:
+    - 'resize'
+    - 'normalize'
+  daimon_stats:
+    mean: [0.09192, -0.043407, -0.045044]
+    std:  [0.230129, 0.136415, 0.112977]
+
+  eflesh_transforms:
+    - 'normalize'
+  eflesh_stats:
+    mean: [26.782779, -514.703113, 115.995235, -2023.415566, 7.838985, 1047.581115, 223.107125, 2531.489869, -1088.107298, -21.523144, -2981.299712, -30.56099, -1813.462424, -38.17999, 218.029818]
+    std:  [786.388902, 1407.679265, 598.348392, 2106.474565, 532.395415, 1565.877061, 654.217583, 2274.906212, 1613.5029, 663.628286, 2402.268524, 744.133281, 2340.596627, 331.950135, 697.778074]
+
+  flexitac_transforms:
+    - 'normalize'
+  flexitac_stats:
+    mean: 0.073024
+    std:  0.169825
+
+  pairs:
+    de:
+      sensor_a: 'daimon'
+      sensor_b: 'eflesh'
+      root:    'de_pair'
+      extra_transforms_a: ['rot180']
+    ef:
+      sensor_a: 'eflesh'
+      sensor_b: 'flexi'
+      root:    'ef_pair'
+      extra_transforms_b: ['rot180']
+    fd:
+      sensor_a: 'flexi'
+      sensor_b: 'daimon'
+      root:    'fd_pair'
+      extra_transforms_b: ['rot180']

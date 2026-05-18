@@ -1,4 +1,4 @@
-from torch.utils.data import Dataset, random_split, Subset, ConcatDataset
+from torch.utils.data import Dataset, random_split, Subset, ConcatDataset, Sampler
 import torchvision
 from torchvision import transforms
 from joint_embedding_learning.utils.dataset_management import sort_order, get_images_from_full_data, get_transformations
@@ -9,6 +9,7 @@ import os
 import re
 import yaml
 import csv
+from collections import defaultdict
 
 
 _EP_FR_RE = re.compile(r'ep(\d+)_fr(\d+)\.pt$')
@@ -360,7 +361,7 @@ class CrossModalPairDataset(Dataset):
     def __init__(self, pair_root, sensor_a, sensor_b,
                  transforms_a=None, transforms_b=None,
                  mean_a=None, std_a=None, mean_b=None, std_b=None,
-                 device='cpu', objects=None):
+                 device='cpu', objects=None, frame_stride=1):
         a_dir = os.path.join(pair_root, sensor_a)
         b_dir = os.path.join(pair_root, sensor_b)
 
@@ -387,10 +388,42 @@ class CrossModalPairDataset(Dataset):
         self.files_b = [b_files[n] for n in common]
         self.episode_per_sample = []
         self.frame_per_sample = []
+        # object id per sample: parsed from the "object/" key prefix used in
+        # the per-object layout (flat layout -> all 0). Needed by CWCL so soft
+        # positives are gated to the same object (episode ids are NOT unique
+        # across objects — ep0000 exists for every object).
+        self.object_per_sample = []
+        self.object_names = []
+        _obj_to_id = {}
         for n in common:
             ep, fr = _parse_ep_fr(n)
             self.episode_per_sample.append(ep)
             self.frame_per_sample.append(fr)
+            obj = n.split('/')[0] if '/' in n else '_flat_'
+            if obj not in _obj_to_id:
+                _obj_to_id[obj] = len(self.object_names)
+                self.object_names.append(obj)
+            self.object_per_sample.append(_obj_to_id[obj])
+
+        # Per-episode temporal subsampling: keep every `frame_stride`-th frame
+        # within each (object, episode). Used to down-sample a higher-rate
+        # pair (e.g. ef = eFlesh+FlexiTac) so the three pairs have comparable
+        # temporal density / dataset size.
+        if frame_stride and frame_stride > 1:
+            by_ep = defaultdict(list)
+            for i in range(len(self.files_a)):
+                by_ep[(self.object_per_sample[i],
+                       self.episode_per_sample[i])].append(i)
+            keep = []
+            for idxs in by_ep.values():
+                idxs.sort(key=lambda i: self.frame_per_sample[i])
+                keep.extend(idxs[::frame_stride])
+            keep.sort()
+            self.files_a = [self.files_a[i] for i in keep]
+            self.files_b = [self.files_b[i] for i in keep]
+            self.episode_per_sample = [self.episode_per_sample[i] for i in keep]
+            self.frame_per_sample = [self.frame_per_sample[i] for i in keep]
+            self.object_per_sample = [self.object_per_sample[i] for i in keep]
 
         self.transforms_a = transforms_a
         self.transforms_b = transforms_b
@@ -437,9 +470,90 @@ class CrossModalPairDataset(Dataset):
                              self.mean_a, self.std_a)
         x_b = self._load_one(self.files_b[idx], self.transforms_b,
                              self.mean_b, self.std_b)
+        object_id = torch.tensor(self.object_per_sample[idx], dtype=torch.long).to(self.device)
         episode_id = torch.tensor(self.episode_per_sample[idx], dtype=torch.long).to(self.device)
         frame_id = torch.tensor(self.frame_per_sample[idx], dtype=torch.long).to(self.device)
-        return [x_a, x_b], [episode_id, frame_id]
+        # label triple: [object_id, episode_id, frame_id]. Consumers that only
+        # used [episode, frame] ignore labels entirely, so this is additive.
+        return [x_a, x_b], [object_id, episode_id, frame_id]
+
+
+class EpisodeChunkBatchSampler(Sampler):
+    """Batch sampler that builds each batch from contiguous frame-chunks of a
+    few episodes, so same-episode frames co-occur within the batch.
+
+    This is required for CWCL: its soft positives are same-(object,episode)
+    frames weighted by frame distance, and plain random shuffling almost never
+    co-locates them in a batch (W collapses to identity → CWCL ≈ InfoNCE).
+
+    Each epoch:
+      - group sample indices by (object_id, episode_id), sort within by frame
+      - cut each group into contiguous chunks of `chunk_size` frames
+      - shuffle chunk order; pack `batch_size // chunk_size` chunks per batch
+
+    So every batch contains several contiguous frame-runs — within a run CWCL
+    sees graded soft positives, across runs they are negatives.
+
+    Works on a CrossModalPairDataset or a Subset of one (e.g. from
+    random_split). Batch sizes vary slightly (partial trailing chunks); CWCL
+    is batch-size agnostic so that is fine.
+    """
+
+    def __init__(self, dataset, batch_size, chunk_size=8, drop_last=True, seed=0):
+        self.batch_size = int(batch_size)
+        self.chunk_size = max(1, int(chunk_size))
+        self.drop_last = bool(drop_last)
+        self.seed = int(seed)
+        self.epoch = 0
+
+        obj, ep, fr = self._extract_meta(dataset)
+        groups = defaultdict(list)
+        for i in range(len(obj)):
+            groups[(obj[i], ep[i])].append(i)
+
+        self.chunks = []
+        for idxs in groups.values():
+            idxs.sort(key=lambda i: fr[i])
+            for s in range(0, len(idxs), self.chunk_size):
+                self.chunks.append(idxs[s:s + self.chunk_size])
+
+        self.chunks_per_batch = max(1, self.batch_size // self.chunk_size)
+
+    @staticmethod
+    def _extract_meta(dataset):
+        """Return (object_ids, episode_ids, frame_ids) as local-indexed lists,
+        transparently unwrapping a Subset."""
+        if isinstance(dataset, Subset):
+            base, idxs = dataset.dataset, dataset.indices
+            return ([base.object_per_sample[i] for i in idxs],
+                    [base.episode_per_sample[i] for i in idxs],
+                    [base.frame_per_sample[i] for i in idxs])
+        return (list(dataset.object_per_sample),
+                list(dataset.episode_per_sample),
+                list(dataset.frame_per_sample))
+
+    def set_epoch(self, epoch):
+        self.epoch = int(epoch)
+
+    def __len__(self):
+        n_full = len(self.chunks) // self.chunks_per_batch
+        rem = len(self.chunks) % self.chunks_per_batch
+        return n_full + (1 if (rem and not self.drop_last) else 0)
+
+    def __iter__(self):
+        g = torch.Generator()
+        g.manual_seed(self.seed + self.epoch)
+        order = torch.randperm(len(self.chunks), generator=g).tolist()
+        batch, cnt = [], 0
+        for ci in order:
+            batch.extend(self.chunks[ci])
+            cnt += 1
+            if cnt == self.chunks_per_batch:
+                yield batch
+                batch, cnt = [], 0
+        if batch and not self.drop_last:
+            yield batch
+        self.epoch += 1
 
 
 class DynamicSelfDataset(Dataset):

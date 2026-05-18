@@ -17,7 +17,7 @@ What it produces (under --out_dir):
 
 Usage:
     python scripts/eval_cross_modal_vae3_sachin.py \
-        --checkpoint_dir checkpoints/cross_modal_tri/cross_modal_vae3/dataset_sachin_run_<run_name>_<TS> \
+        --checkpoint_dir checkpoints/cross_modal_tri/cross_modal_vae3/dataset_sachin_static_run_scratch11_shear_efs3_20260517_043942 \
         --device cuda:0
 
 Optional:
@@ -437,6 +437,20 @@ def main():
     parser.add_argument('--max_mmd_points', type=int, default=2000,
                         help='Sample size per side for MMD numeric metric.')
     parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--daimon_deform_only', action='store_true',
+                        help='Encode Daimon as channel-0 replicated 3x '
+                             '(deform-only). Applies to BOTH paired and '
+                             'dynamic data. Use when evaluating a '
+                             'dataset_sachin_static_deform checkpoint.')
+    parser.add_argument('--ef_stride', type=int, default=1,
+                        help='Per-episode frame stride for ef_pair — set to '
+                             'MATCH the training run (e.g. 3) so the val set '
+                             'is the genuine held-out partition and metrics '
+                             'are comparable.')
+    parser.add_argument('--de_stride', type=int, default=1,
+                        help='Per-episode frame stride for de_pair (match training).')
+    parser.add_argument('--fd_stride', type=int, default=1,
+                        help='Per-episode frame stride for fd_pair (match training).')
     args = parser.parse_args()
 
     out_dir = args.out_dir or os.path.join(args.checkpoint_dir, 'eval_sachin')
@@ -456,9 +470,34 @@ def main():
     model.eval()
     print(f"Loaded {args.checkpoint_dir}/model.pt")
 
+    # Optional: force Daimon to deform-only (ch0 replicated 3x) at encode time.
+    # _enc is the single chokepoint for forward_pair AND forward_self, so this
+    # one patch covers paired + dynamic + recon-viz Daimon uniformly.
+    # Idempotent — ch0 of an already-[ch0,ch0,ch0] tensor is ch0 — so it is
+    # safe even when paired data already came from a *_deform dataset.
+    if args.daimon_deform_only:
+        _orig_enc = model._enc
+
+        def _enc_deform(x, sensor, _orig=_orig_enc):
+            if sensor == 'D' and hasattr(x, 'dim') and x.dim() == 4:
+                x = x[:, 0:1].repeat(1, 3, 1, 1)
+            return _orig(x, sensor)
+
+        model._enc = _enc_deform
+        print("[daimon_deform_only] Daimon encoded as ch0 replicated 3x "
+              "(paired + dynamic)")
+
     # ── Load paired (sachin) + dynamic datasets ──
+    # Per-pair strides MUST match the training run (e.g. --ef_stride 3) so the
+    # random_split val set is the genuine held-out partition.
+    _pair_strides = {k: v for k, v in
+                     (('de', args.de_stride), ('ef', args.ef_stride),
+                      ('fd', args.fd_stride)) if v > 1}
+    if _pair_strides:
+        print(f"Per-pair frame strides: {_pair_strides}")
     paired_train, paired_val, _ = get_paired_tri_datasets_sachin(
         args.dataset_name, device='cpu', objects=args.objects,
+        pair_strides=_pair_strides or None,
     )
     dyn_train, _dv, _ = get_all_contrastive_datasets(
         args.dynamic_dataset_name, device='cpu',

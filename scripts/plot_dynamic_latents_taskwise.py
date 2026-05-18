@@ -142,11 +142,25 @@ def _load_model(checkpoint_dir, device):
 
 
 def process_checkpoint(ax, checkpoint_dir, dyn_root, dyn_details, objects,
-                        device, max_points, batch_size, tsne_perplexity, seed):
+                        device, max_points, batch_size, tsne_perplexity, seed,
+                        daimon_deform_only=False):
     """Encode, measure linear separability, t-SNE scatter. Returns metrics dict."""
     name = os.path.basename(checkpoint_dir.rstrip('/'))
     print(f"\n=== {name} ===")
     model, model_details = _load_model(checkpoint_dir, device)
+
+    # Deform-only Daimon: ch0 replicated 3x at encode time. _enc is the single
+    # chokepoint, so this covers every Daimon encode. Idempotent.
+    if daimon_deform_only:
+        _orig_enc = model._enc
+
+        def _enc_deform(x, sensor, _orig=_orig_enc):
+            if sensor == 'D' and hasattr(x, 'dim') and x.dim() == 4:
+                x = x[:, 0:1].repeat(1, 3, 1, 1)
+            return _orig(x, sensor)
+
+        model._enc = _enc_deform
+        print("  [daimon_deform_only] Daimon encoded as ch0 replicated 3x")
     image_size = dyn_details.get('image_size', 224)
     pd = model_details.get('projection_dim', '?')
 
@@ -243,6 +257,9 @@ def main():
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--tsne_perplexity', type=float, default=30.0)
     parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--daimon_deform_only', action='store_true',
+                        help='Encode Daimon as channel-0 replicated 3x. Use '
+                             'for dataset_sachin_static_deform checkpoints.')
     parser.add_argument('--out', type=str, default='dynamic_latents_taskwise.png')
     args = parser.parse_args()
 
@@ -265,6 +282,7 @@ def main():
         results[os.path.basename(ck.rstrip('/'))] = process_checkpoint(
             ax, ck, dyn_root, dyn_details, args.objects, args.device,
             args.max_points, args.batch_size, args.tsne_perplexity, args.seed,
+            daimon_deform_only=args.daimon_deform_only,
         )
 
     # Shared legend: 2 task colours + 3 sensor markers + misclassified ring.

@@ -90,6 +90,20 @@ def main():
     parser.add_argument('--epochs', type=int, default=None,
                         help='Total training epochs (overrides '
                              'model_details["epochs"], default 100).')
+    parser.add_argument('--lr', type=float, default=None,
+                        help='Learning rate (overrides '
+                             'model_details["learning_rate"], default 1e-4). '
+                             'Use a lower value (e.g. 1e-5) when finetuning '
+                             'from --resume_from.')
+    parser.add_argument('--ef_stride', type=int, default=1,
+                        help='Keep every Nth frame per episode in ef_pair. '
+                             'ef (eFlesh+FlexiTac) is sampled ~2.7x faster '
+                             'than the Daimon pairs; stride 3 ~equalizes the '
+                             'three pairs. run_name gets a _efs<N> suffix.')
+    parser.add_argument('--de_stride', type=int, default=1,
+                        help='Per-episode frame stride for de_pair.')
+    parser.add_argument('--fd_stride', type=int, default=1,
+                        help='Per-episode frame stride for fd_pair.')
     args = parser.parse_args()
 
     # Sweep suffixes (before timestamp) so sweep runs are distinct.
@@ -99,6 +113,12 @@ def main():
         args.run_name = f"{args.run_name}_ws{args.infonce_warmup_start}"
     if args.infonce_warmup_epochs is not None and args.run_name:
         args.run_name = f"{args.run_name}_we{args.infonce_warmup_epochs}"
+    if args.ef_stride > 1 and args.run_name:
+        args.run_name = f"{args.run_name}_efs{args.ef_stride}"
+    if args.de_stride > 1 and args.run_name:
+        args.run_name = f"{args.run_name}_des{args.de_stride}"
+    if args.fd_stride > 1 and args.run_name:
+        args.run_name = f"{args.run_name}_fds{args.fd_stride}"
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     args.run_name = f"{args.run_name}_{timestamp}" if args.run_name else timestamp
@@ -124,6 +144,8 @@ def main():
         model_details['infonce_warmup_epochs'] = args.infonce_warmup_epochs
     if args.epochs is not None:
         model_details['epochs'] = args.epochs
+    if args.lr is not None:
+        model_details['learning_rate'] = args.lr
 
     project = 'CMTEJ_debug' if args.debug else 'CMTEJ_static_sachin'
     output_folder = (f"{args.model_name}_{dataset_details['dataset_type']}_"
@@ -136,9 +158,17 @@ def main():
     print(f"Checkpoint dir: checkpoints/{dataset_details['dataset_type']}/"
           f"{args.model_name}/{args.dataset_name}_run_{args.run_name}/")
 
+    # Per-pair temporal subsampling (equalize sampling rate across pairs).
+    pair_strides = {k: v for k, v in
+                    (('de', args.de_stride), ('ef', args.ef_stride),
+                     ('fd', args.fd_stride)) if v > 1}
+    if pair_strides:
+        print(f"Per-pair frame strides: {pair_strides}")
+
     # Paired (sachin) with per-pair geometric corrections.
     paired_train, paired_val, _ = get_paired_tri_datasets_sachin(
         args.dataset_name, device=args.device, objects=args.objects,
+        pair_strides=pair_strides or None,
     )
 
     train_tri(

@@ -6,7 +6,7 @@ import random
 import argparse
 from tqdm import tqdm
 from torchvision.utils import make_grid
-from joint_embedding_learning.data.datasets import get_all_contrastive_datasets
+from joint_embedding_learning.data.datasets import get_all_contrastive_datasets, EpisodeChunkBatchSampler
 from joint_embedding_learning.utils.utils import load_optimizer, save_model, get_loss
 from joint_embedding_learning.utils.losses import loss_vector_embedding, cwcl_weight_stats
 from joint_embedding_learning.utils.models_setup import get_model
@@ -360,17 +360,21 @@ def tri_train_step(args, train_loaders, model, criterion, optimizer, wandb):
 
     for batch_idx, batches in enumerate(tqdm(_tri_zip_loaders(train_loaders), total=max_len)):
         targets = {}
-        for pair_key, ((x_a, x_b), _labels) in batches.items():
+        meta = {}
+        for pair_key, ((x_a, x_b), labels) in batches.items():
             x_a = x_a.to(args.device)
             x_b = x_b.to(args.device)
             targets[pair_key] = (x_a, x_b)
+            # labels = [object_id, episode_id, frame_id] — used by CWCL,
+            # ignored by InfoNCE / uniforce.
+            meta[pair_key] = tuple(t.to(args.device) for t in labels)
 
         optimizer.zero_grad()
         outs = {p: model.forward_pair(targets[p][0], targets[p][1], p)
                 for p in ('de', 'ef', 'fd')}
         beta = _kl_beta(args)
         alpha = _infonce_alpha(args)
-        info = criterion(outs, targets, beta=beta, alpha=alpha)
+        info = criterion(outs, targets, beta=beta, alpha=alpha, meta=meta)
         loss = info['total']
         loss.backward()
         optimizer.step()
@@ -389,7 +393,7 @@ def tri_train_step(args, train_loaders, model, criterion, optimizer, wandb):
                 log_dict[f"Loss_train/infonce/{p}"] = info[f"infonce_{p}"].item()
                 log_dict[f"Loss_train/recon/{p}"] = info[f"recon_{p}"].item()
             for k in info:
-                if k.startswith("kl_"):
+                if k.startswith("kl_") or k.startswith("cwcl_"):
                     log_dict[f"Loss_train/{k}"] = info[k].item() if torch.is_tensor(info[k]) else float(info[k])
 
             log_dict.update(_tri_log_metrics("Metric_train", outs, info))
@@ -426,16 +430,18 @@ def tri_validation_step(args, val_loaders, model, criterion, wandb, val_name='Va
         max_len = max(len(l) for l in val_loaders.values())
         for batches in tqdm(_tri_zip_loaders(val_loaders), total=max_len):
             targets = {}
-            for pair_key, ((x_a, x_b), _labels) in batches.items():
+            meta = {}
+            for pair_key, ((x_a, x_b), labels) in batches.items():
                 x_a = x_a.to(args.device)
                 x_b = x_b.to(args.device)
                 targets[pair_key] = (x_a, x_b)
+                meta[pair_key] = tuple(t.to(args.device) for t in labels)
 
             outs = {p: model.forward_pair(targets[p][0], targets[p][1], p)
                     for p in ('de', 'ef', 'fd')}
             beta = _kl_beta(args)
             alpha = _infonce_alpha(args)
-            info = criterion(outs, targets, beta=beta, alpha=alpha)
+            info = criterion(outs, targets, beta=beta, alpha=alpha, meta=meta)
             loss = info['total']
 
             log_dict = {
@@ -509,22 +515,40 @@ def train_tri(train_datasets, validation_datasets, dataset_name, dataset_details
     print('InfoNCE Warmup Start:', getattr(args, 'infonce_warmup_start', 0))
     print('InfoNCE Warmup Epochs:', getattr(args, 'infonce_warmup_epochs', 0))
 
+    # Episode-aware batching: required by CWCL so same-episode frames co-occur
+    # in a batch (auto-on for loss='cwcl'; opt-in elsewhere via
+    # use_episode_sampler). Otherwise standard shuffled DataLoaders.
+    _use_ep_sampler = (getattr(args, 'use_episode_sampler', False)
+                       or getattr(args, 'loss', 'infonce') == 'cwcl')
+    _chunk = int(getattr(args, 'cwcl_chunk_size', 8))
+
+    def _make_loader(ds, seed):
+        if _use_ep_sampler:
+            sampler = EpisodeChunkBatchSampler(
+                ds, batch_size=args.batch_size, chunk_size=_chunk,
+                drop_last=True, seed=seed,
+            )
+            return torch.utils.data.DataLoader(ds, batch_sampler=sampler)
+        return torch.utils.data.DataLoader(
+            ds, batch_size=args.batch_size, shuffle=True, drop_last=True
+        )
+
+    if _use_ep_sampler:
+        print(f"Episode-aware batch sampler ON (chunk_size={_chunk})")
+
     train_loaders = {
-        k: torch.utils.data.DataLoader(ds, batch_size=args.batch_size,
-                                       shuffle=True, drop_last=True)
-        for k, ds in train_datasets.items()
+        k: _make_loader(ds, seed=i)
+        for i, (k, ds) in enumerate(train_datasets.items())
     }
     val_loaders_array = {}
     for split_key, ds_dict in validation_datasets.items():
         if not ds_dict:
             continue
         loaders = {}
-        for pair_key, ds in ds_dict.items():
+        for pi, (pair_key, ds) in enumerate(ds_dict.items()):
             if len(ds) == 0:
                 continue
-            loaders[pair_key] = torch.utils.data.DataLoader(
-                ds, batch_size=args.batch_size, shuffle=True, drop_last=True
-            )
+            loaders[pair_key] = _make_loader(ds, seed=100 + pi)
         # Need all 3 pairs present (de/ef/fd) for tri-modal joint validation.
         if len(loaders) == len(ds_dict) and len(loaders) > 0:
             val_loaders_array[split_key] = loaders
@@ -564,8 +588,12 @@ def train_tri(train_datasets, validation_datasets, dataset_name, dataset_details
 
         with torch.no_grad():
             if epoch % 10 == 0:
+                # Periodic kept snapshot: every 50 epochs once past epoch 100,
+                # so long runs are recoverable (model.pt itself is overwritten).
+                snap = f"ep{epoch}" if (epoch >= 100 and epoch % 50 == 0) else None
                 save_model(model, dataset_name, dataset_type, model_type,
-                           dataset_details, model_details, run_name=run_name)
+                           dataset_details, model_details, run_name=run_name,
+                           tag=snap)
                 if last_targets is not None:
                     x_D, _ = last_targets['de']
                     grid = make_grid(x_D[:36], nrow=6, normalize=True)

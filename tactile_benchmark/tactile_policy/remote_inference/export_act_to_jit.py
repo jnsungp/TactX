@@ -3,11 +3,11 @@
 Export ACT checkpoint to TorchScript for deployment.
 
 Usage:
-    python export_act_to_jit.py --policy_name eflesh_eflesh_plug_insertion_direct --policy_config act_eflesh
-    python export_act_to_jit.py --policy_name pnp_daimon_cmlatent_cycle_only --policy_config act_cross_modal_pnp_z16
-        python export_act_to_jit.py --policy_name pnp_daimon_cmlatent_mmd_only --policy_config act_cross_modal_pnp_z16
-            python export_act_to_jit.py --policy_name pnp_daimon_cmlatent_plain --policy_config act_cross_modal_pnp_z16
-    scp dataset_stats.pkl policy_jit.pt sachin@100.82.179.66:/media/ExtHDD/sachin/checkpoints/eflesh_eflesh_plug_insertion_direct_vis_ckpt
+    python export_act_to_jit.py --policy_name flexi_flexi_plug_insertion_direct_vis --policy_config act_flexi_vis
+    python export_act_to_jit.py --policy_name plug_daimon_cmlatent_plain_cylplug_ckpt --policy_config act_cross_modal_pnp_z16
+    python export_act_to_jit.py --policy_name pnp_daimon_cmlatent_mmd_only --policy_config act_cross_modal_pnp_z16
+    python export_act_to_jit.py --policy_name pnp_daimon_cmlatent_plain --policy_config act_cross_modal_pnp_z16
+    scp dataset_stats.pkl policy_jit.pt sachin@100.82.179.66:/media/ExtHDD/sachin/checkpoints/latent/plug_insertion/plug_daimon_cmlatent_plain_cylplug_ckpt
 """
 
 import dataclasses
