@@ -194,6 +194,8 @@ def get_cross_modal_tri_datasets_sachin(dataset_name, dataset_details,
         #            modular): per object, every val_stride-th episode -> val,
         #            so every object is represented in val and there is no
         #            near-duplicate leakage.
+        #            If 'val_episode_ids' is set (list of int), those specific
+        #            episode indices go to val regardless of stride logic.
         if not bool(dataset_details.get('episode_val_split', False)):
             n = len(ds_full)
             train_len = int(train_frac * n)
@@ -205,7 +207,6 @@ def get_cross_modal_tri_datasets_sachin(dataset_name, dataset_details,
             train_datasets[pair_key] = ds_train
             val_datasets[pair_key] = ds_val
         else:
-            val_stride = max(2, round(1.0 / max(1e-6, 1.0 - train_frac)))
             groups = defaultdict(list)        # (obj_id, ep_id) -> sample idxs
             for i in range(len(ds_full)):
                 groups[(ds_full.object_per_sample[i],
@@ -214,15 +215,31 @@ def get_cross_modal_tri_datasets_sachin(dataset_name, dataset_details,
             for key in groups:
                 by_obj[key[0]].append(key)
             train_idx, val_idx = [], []
-            for obj_id in sorted(by_obj):
-                for j, key in enumerate(sorted(by_obj[obj_id])):
-                    (val_idx if j % val_stride == 0 else train_idx).extend(
-                        groups[key])
+
+            explicit_val_eps = dataset_details.get('val_episode_ids', None)
+            if explicit_val_eps is not None:
+                val_ep_set = set(int(e) for e in explicit_val_eps)
+                for key, idxs in groups.items():
+                    if key[1] in val_ep_set:
+                        val_idx.extend(idxs)
+                    else:
+                        train_idx.extend(idxs)
+                print(f"  [{pair_key}] episode-level split (explicit): "
+                      f"{len(train_idx)} train / {len(val_idx)} val frames "
+                      f"over {len(groups)} episodes "
+                      f"(val eps = {sorted(val_ep_set)})")
+            else:
+                val_stride = max(2, round(1.0 / max(1e-6, 1.0 - train_frac)))
+                for obj_id in sorted(by_obj):
+                    for j, key in enumerate(sorted(by_obj[obj_id])):
+                        (val_idx if j % val_stride == 0 else train_idx).extend(
+                            groups[key])
+                print(f"  [{pair_key}] episode-level split: "
+                      f"{len(train_idx)} train / {len(val_idx)} val frames "
+                      f"over {len(groups)} episodes (val = every {val_stride}th)")
+
             train_idx.sort()
             val_idx.sort()
-            print(f"  [{pair_key}] episode-level split: "
-                  f"{len(train_idx)} train / {len(val_idx)} val frames "
-                  f"over {len(groups)} episodes (val = every {val_stride}th)")
             train_datasets[pair_key] = Subset(ds_full, train_idx)
             val_datasets[pair_key] = Subset(ds_full, val_idx)
 

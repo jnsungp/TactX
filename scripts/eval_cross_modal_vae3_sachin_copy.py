@@ -17,9 +17,9 @@ What it produces (under --out_dir):
 
 Usage:
 python scripts/eval_cross_modal_vae3_sachin_copy.py \
-    --checkpoint_dir checkpoints/cross_modal_tri/cross_modal_vae3/dataset_sachin_static_run_scratch11_shear_efs3_20260517_043942 \
-    --dynamic_data_root latent_data_processed_dynamic/pnp \
-    --dynamic_objects pnp \
+    --checkpoint_dir checkpoints/cross_modal_tri/cross_modal_vae3/dataset_sachin_dynamic_paired_run_dynamic_paired_efs2_20260519_043717 \
+    --dynamic_data_root latent_data_processed_dynamic/pnp latent_data_processed_dynamic/wipe latent_data_processed_dynamic/plug \
+    --dynamic_objects pnp wipe plug \
     --device cuda:0
 
 Optional:
