@@ -451,9 +451,24 @@ def main():
                         help='Per-episode frame stride for de_pair (match training).')
     parser.add_argument('--fd_stride', type=int, default=1,
                         help='Per-episode frame stride for fd_pair (match training).')
+    parser.add_argument('--weights', default='model.pt',
+                        help='Weights file inside --checkpoint_dir to evaluate '
+                             '(e.g. model_ep200.pt). Default model.pt.')
+    parser.add_argument('--skip_dynamic', action='store_true',
+                        help='Skip the dynamic-data section (no dynamic load, '
+                             'no MMD static-vs-dynamic, no tsne_dynamic / '
+                             'tsne_static_vs_dynamic). Paired-static eval only.')
     args = parser.parse_args()
 
-    out_dir = args.out_dir or os.path.join(args.checkpoint_dir, 'eval_sachin')
+    # Default out_dir: eval_sachin for model.pt; eval_<stem> for a snapshot,
+    # so evaluating multiple weights files does not overwrite.
+    if args.out_dir:
+        out_dir = args.out_dir
+    elif args.weights == 'model.pt':
+        out_dir = os.path.join(args.checkpoint_dir, 'eval_sachin')
+    else:
+        stem = os.path.splitext(args.weights)[0]
+        out_dir = os.path.join(args.checkpoint_dir, f'eval_{stem}')
     os.makedirs(out_dir, exist_ok=True)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -462,13 +477,13 @@ def main():
     with open(os.path.join(args.checkpoint_dir, 'model_details.yaml')) as f:
         model_details = yaml.safe_load(f)
     model = get_model('cross_modal_vae3', model_details).to(args.device)
-    ckpt = torch.load(os.path.join(args.checkpoint_dir, 'model.pt'),
+    ckpt = torch.load(os.path.join(args.checkpoint_dir, args.weights),
                       map_location=args.device, weights_only=False)
     if isinstance(ckpt, dict) and 'state_dict' in ckpt:
         ckpt = ckpt['state_dict']
     model.load_state_dict(ckpt)
     model.eval()
-    print(f"Loaded {args.checkpoint_dir}/model.pt")
+    print(f"Loaded {args.checkpoint_dir}/{args.weights}  ->  out_dir={out_dir}")
 
     # Optional: force Daimon to deform-only (ch0 replicated 3x) at encode time.
     # _enc is the single chokepoint for forward_pair AND forward_self, so this
@@ -499,11 +514,14 @@ def main():
         args.dataset_name, device='cpu', objects=args.objects,
         pair_strides=_pair_strides or None,
     )
-    dyn_train, _dv, _ = get_all_contrastive_datasets(
-        args.dynamic_dataset_name, device='cpu',
-    )
     print('Paired val sizes:', {k: len(v) for k, v in paired_val.items()})
-    print('Dynamic sizes:', {k: len(v) for k, v in dyn_train.items()})
+    if not args.skip_dynamic:
+        dyn_train, _dv, _ = get_all_contrastive_datasets(
+            args.dynamic_dataset_name, device='cpu',
+        )
+        print('Dynamic sizes:', {k: len(v) for k, v in dyn_train.items()})
+    else:
+        print('[skip_dynamic] dynamic-data section disabled')
 
     # ── Extract paired μ (train + val) ──
     print('Extracting paired-static μ...')
@@ -513,8 +531,9 @@ def main():
         mu_pairs_v[pk] = extract_pair_mu(paired_val[pk], pk, model, args.device)
 
     # ── Extract dynamic μ (per modality, unpaired) ──
-    print('Extracting dynamic μ...')
-    dyn_mus = {s: extract_self_mu(dyn_train[s], s, model, args.device) for s in _SENSORS}
+    if not args.skip_dynamic:
+        print('Extracting dynamic μ...')
+        dyn_mus = {s: extract_self_mu(dyn_train[s], s, model, args.device) for s in _SENSORS}
 
     # ── Aggregate static μ per modality (canonical source per sensor) ──
     # Same convention as the training step's MMD bridge.
@@ -542,21 +561,22 @@ def main():
     plot_cosine_dist(pairs_data, os.path.join(out_dir, 'cosine_dist_val.png'))
 
     # ── MMD static vs dynamic per modality ──
-    print('Computing MMD static-vs-dynamic...')
-    mmd_lines = ['MMD² static vs dynamic per modality (lower = better):']
-    for s in _SENSORS:
-        st = static_mu_per_sensor[s]
-        dy = dyn_mus[s]
-        n = min(args.max_mmd_points, len(st), len(dy))
-        rng = np.random.RandomState(args.seed)
-        ids_s = rng.choice(len(st), n, replace=False)
-        ids_d = rng.choice(len(dy), n, replace=False)
-        mmd = mmd_rbf_multi(st[ids_s], dy[ids_d])
-        mmd_lines.append(f"  {s}: MMD² = {mmd:.6f}  (n_static={len(st)}, n_dynamic={len(dy)})")
-    mmd_txt = '\n'.join(mmd_lines)
-    print(mmd_txt)
-    with open(os.path.join(out_dir, 'mmd_static_vs_dynamic.txt'), 'w') as f:
-        f.write(mmd_txt + '\n')
+    if not args.skip_dynamic:
+        print('Computing MMD static-vs-dynamic...')
+        mmd_lines = ['MMD² static vs dynamic per modality (lower = better):']
+        for s in _SENSORS:
+            st = static_mu_per_sensor[s]
+            dy = dyn_mus[s]
+            n = min(args.max_mmd_points, len(st), len(dy))
+            rng = np.random.RandomState(args.seed)
+            ids_s = rng.choice(len(st), n, replace=False)
+            ids_d = rng.choice(len(dy), n, replace=False)
+            mmd = mmd_rbf_multi(st[ids_s], dy[ids_d])
+            mmd_lines.append(f"  {s}: MMD² = {mmd:.6f}  (n_static={len(st)}, n_dynamic={len(dy)})")
+        mmd_txt = '\n'.join(mmd_lines)
+        print(mmd_txt)
+        with open(os.path.join(out_dir, 'mmd_static_vs_dynamic.txt'), 'w') as f:
+            f.write(mmd_txt + '\n')
 
     # ── Cross-modal retrieval on paired val ──
     print('Computing retrieval Top-k...')
@@ -578,13 +598,14 @@ def main():
                      n_max=args.max_tsne_points)
     plot_tsne_paired(mu_pairs_v, 'val', os.path.join(out_dir, 'tsne_paired_val.png'),
                      n_max=args.max_tsne_points)
-    plot_tsne_dynamic(dyn_mus, os.path.join(out_dir, 'tsne_dynamic.png'),
-                      n_max=args.max_tsne_points)
-    plot_tsne_static_vs_dynamic(
-        static_mu_per_sensor, dyn_mus,
-        os.path.join(out_dir, 'tsne_static_vs_dynamic.png'),
-        n_max=min(args.max_tsne_points, 1500),
-    )
+    if not args.skip_dynamic:
+        plot_tsne_dynamic(dyn_mus, os.path.join(out_dir, 'tsne_dynamic.png'),
+                          n_max=args.max_tsne_points)
+        plot_tsne_static_vs_dynamic(
+            static_mu_per_sensor, dyn_mus,
+            os.path.join(out_dir, 'tsne_static_vs_dynamic.png'),
+            n_max=min(args.max_tsne_points, 1500),
+        )
 
     # ── Reconstruction visualizations ──
     print('Reconstruction visualizations...')

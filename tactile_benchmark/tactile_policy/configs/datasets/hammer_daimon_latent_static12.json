@@ -1,0 +1,4 @@
+{
+    "train": ["dai_dai_hammer_latent_static12"],
+    "val": ["dai_dai_hammer_val_latent_static12"]
+}

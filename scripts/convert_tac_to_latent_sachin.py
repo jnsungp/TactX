@@ -220,6 +220,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkpoint_dir', required=True,
                         help='checkpoints/cross_modal_tri/cross_modal_vae3/dataset_sachin_run_...')
+    parser.add_argument('--checkpoint_file', default='model.pt',
+                        help='Weights file inside --checkpoint_dir (e.g. model_ep400.pt).')
     parser.add_argument('--sensor', required=True, choices=['D', 'E', 'F'],
                         help='Which sensor encoder to use.')
     parser.add_argument('--input_dir', required=True,
@@ -268,7 +270,7 @@ def main():
         print(f"[stats override] using {args.stats_dataset_name} for *_stats")
 
     model = get_model('cross_modal_vae3', model_details).to(args.device)
-    ckpt = torch.load(os.path.join(args.checkpoint_dir, 'model.pt'),
+    ckpt = torch.load(os.path.join(args.checkpoint_dir, args.checkpoint_file),
                       map_location=args.device, weights_only=False)
     if isinstance(ckpt, dict) and 'state_dict' in ckpt:
         ckpt = ckpt['state_dict']

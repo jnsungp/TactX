@@ -1,0 +1,4 @@
+{
+    "train": ["dai_dai_object_pnp_latent_static12"],
+    "val": ["dai_dai_object_pnp_val_latent_static12"]
+}

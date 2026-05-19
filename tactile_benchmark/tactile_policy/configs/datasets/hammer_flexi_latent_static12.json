@@ -1,0 +1,4 @@
+{
+    "train": ["flexi_flexi_hammer_latent_static12"],
+    "val": ["flexi_flexi_hammer_val_latent_static12"]
+}

@@ -354,3 +354,42 @@ To run pi0+PyTorch training, an example command is
 
 ```bash
 accelerate launch --main_process_port 29501 --config_file ./4_gpu_bf16.yaml  main.py --chunk_size 64 --batch_size 16 --num_epochs 50000 --lr 5e-5 --seed 0 --exptid 'test_job' --dataset_json_path test.json  --model_cfg pi0_all
+
+
+1. Convert hammer dirs to latent
+From ~/cross_modal_tactile, cmt env (sensor D=daimon, E=eflesh, F=flexi):
+
+
+conda activate cmt
+cd ~/cross_modal_tactile
+CKPT=checkpoints/cross_modal_tri/cross_modal_vae3/dataset_sachin_static12_run_infonce_static12_efs3_20260517_224612
+PROC=tactile_benchmark/data/recordings/processed
+
+python scripts/convert_tac_to_latent_sachin.py --checkpoint_dir $CKPT --checkpoint_file model_ep400.pt --sensor D \
+  --input_dir $PROC/dai_dai_hammer       --output_dir $PROC/dai_dai_hammer_latent_static12       --device cuda:0
+python scripts/convert_tac_to_latent_sachin.py --checkpoint_dir $CKPT --checkpoint_file model_ep400.pt --sensor E \
+  --input_dir $PROC/eflesh_eflesh_hammer --output_dir $PROC/eflesh_eflesh_hammer_latent_static12 --device cuda:0
+python scripts/convert_tac_to_latent_sachin.py --checkpoint_dir $CKPT --checkpoint_file model_ep400.pt --sensor F \
+  --input_dir $PROC/flexi_flexi_hammer   --output_dir $PROC/flexi_flexi_hammer_latent_static12   --device cuda:0
+2. Split 3 episodes into val
+Moves the last 3 sorted episodes of each latent dir into a *_val_* dir:
+
+
+cd ~/cross_modal_tactile/tactile_benchmark/data/recordings/processed
+for s in dai_dai eflesh_eflesh flexi_flexi; do
+  src=${s}_hammer_latent_static12
+  val=${s}_hammer_val_latent_static12
+  mkdir -p "$val"
+  ls "$src"/episode_*.hdf5 | sort -V | tail -3 | xargs -I{} mv {} "$val"/
+  echo "$s -> train $(ls $src/episode_*.hdf5 | wc -l) / val $(ls $val/episode_*.hdf5 | wc -l)"
+done
+3. Train policy (3 cmds)
+From ~/cross_modal_tactile/tactile_benchmark, tactile_bench env, in tmux:
+
+
+tmux kill-session -t hammer_daimon_latent_static12 2>/dev/null; tmux new-session -d -s hammer_daimon_latent_static12 "source /home/junsung/anaconda3/etc/profile.d/conda.sh && conda activate tactile_bench && cd ~/cross_modal_tactile/tactile_benchmark && PYTHONPATH=/home/junsung/cross_modal_tactile/tactile_benchmark CUDA_VISIBLE_DEVICES=0 python tactile_policy/main.py --batch_size 8 --num_epochs 50000 --lr 1e-5 --exptid hammer_daimon_latent_static12 --dataset_json hammer_daimon_latent_static12 --model_cfg act_cross_modal_pnp_z16 --chunk_size 64 2>&1 | tee train_logs/hammer_daimon_latent_static12.log; exec bash"
+
+tmux kill-session -t hammer_eflesh_latent_static12 2>/dev/null; tmux new-session -d -s hammer_eflesh_latent_static12 "source /home/junsung/anaconda3/etc/profile.d/conda.sh && conda activate tactile_bench && cd ~/cross_modal_tactile/tactile_benchmark && PYTHONPATH=/home/junsung/cross_modal_tactile/tactile_benchmark CUDA_VISIBLE_DEVICES=0 python tactile_policy/main.py --batch_size 8 --num_epochs 50000 --lr 1e-5 --exptid hammer_eflesh_latent_static12 --dataset_json hammer_eflesh_latent_static12 --model_cfg act_cross_modal_pnp_z16 --chunk_size 64 2>&1 | tee train_logs/hammer_eflesh_latent_static12.log; exec bash"
+
+tmux kill-session -t hammer_flexi_latent_static12 2>/dev/null; tmux new-session -d -s hammer_flexi_latent_static12 "source /home/junsung/anaconda3/etc/profile.d/conda.sh && conda activate tactile_bench && cd ~/cross_modal_tactile/tactile_benchmark && PYTHONPATH=/home/junsung/cross_modal_tactile/tactile_benchmark CUDA_VISIBLE_DEVICES=0 python tactile_policy/main.py --batch_size 8 --num_epochs 50000 --lr 1e-5 --exptid hammer_flexi_latent_static12 --dataset_json hammer_flexi_latent_static12 --model_cfg act_cross_modal_pnp_z16 --chunk_size 64 2>&1 | tee train_logs/hammer_flexi_latent_static12.log; exec bash"
+Note: 30 train episodes is small — if you see overfitting/mode collapse, drop --chunk_size to 16 (per the README tuning note for small sets).
