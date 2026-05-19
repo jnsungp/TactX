@@ -599,3 +599,113 @@ class CrossModalVAE3(nn.Module):
         for name, (x_a, x_b) in batch.items():
             out[name] = self.forward_pair(x_a, x_b, name)
         return out
+
+
+class CrossModalCLR3(nn.Module):
+    """
+    Tri-modal *plain contrastive* model (Daimon + eFlesh + FlexiTac).
+
+    The non-variational, reconstruction-free counterpart of CrossModalVAE3:
+    three sensor encoders feed three projection heads that map into ONE shared
+    latent space, where pair-wise NT-Xent contrastive loss is applied over the
+    de / ef / fd pairs. No (mu, logvar), no reparameterization, no decoders,
+    no KL — just the three encoders, three projection heads, and contrastive
+    alignment in the common latent space.
+
+    Encoders (identical to CrossModalVAE3):
+        Daimon   x_D (B, 3, 224, 224) -> ResNet           -> h_D (B, n_features)
+        eFlesh   x_E (B, 15)          -> MagneticEncoder  -> h_E (B, n_features)
+        FlexiTac x_F (B, 12, 16)      -> FlexiTacEncoder  -> h_F (B, n_features)
+
+    Projection heads (one per modality, output projection_dim directly):
+        g(h) = W2 * ReLU(W1 * h)
+
+    forward_pair(x_a, x_b, name) returns a dict whose key names mirror
+    CrossModalVAE3.forward_pair (``z_a``/``z_b`` plus ``mu_a``/``mu_b`` aliases
+    that point at the same projections) so the existing train_tri /
+    tri_train_step loop and its metric helpers consume it unchanged.
+    """
+
+    _PAIR_TABLE = {
+        "de": ("D", "E"),
+        "ef": ("E", "F"),
+        "fd": ("F", "D"),
+    }
+
+    def __init__(self, image_encoder, magnetic_encoder, flexitac_encoder,
+                 projection_dim, n_features):
+        super().__init__()
+        self.n_features = n_features
+        self.projection_dim = projection_dim
+
+        self.image_encoder = image_encoder
+        self.image_encoder.fc = nn.Identity()
+        self.magnetic_encoder = magnetic_encoder
+        self.flexitac_encoder = flexitac_encoder
+
+        def _make_projector():
+            # g(h) = W2 * ReLU(W1 * h) -> projection_dim (no (mu, logvar) split).
+            return nn.Sequential(
+                nn.Linear(n_features, n_features, bias=False),
+                nn.ReLU(),
+                nn.Linear(n_features, projection_dim, bias=False),
+            )
+
+        self.proj_D = _make_projector()
+        self.proj_E = _make_projector()
+        self.proj_F = _make_projector()
+
+    def _encoder_for(self, sensor):
+        return {
+            "D": self.image_encoder,
+            "E": self.magnetic_encoder,
+            "F": self.flexitac_encoder,
+        }[sensor]
+
+    def _projector_for(self, sensor):
+        return {"D": self.proj_D, "E": self.proj_E, "F": self.proj_F}[sensor]
+
+    def _enc(self, x, sensor):
+        h = self._encoder_for(sensor)(x)
+        z = self._projector_for(sensor)(h)
+        return h, z
+
+    def forward_pair(self, x_a, x_b, name):
+        """
+        Run a pair (a, b) through their encoders + projection heads.
+
+        Args:
+            x_a, x_b: input tensors for sensor_a / sensor_b in the pair.
+            name: one of {'de', 'ef', 'fd'}.
+
+        Returns dict with:
+            h_a, h_b               : (B, n_features)   representation space
+            z_a, z_b               : (B, projection_dim) shared latent (contrastive)
+            mu_a, mu_b             : aliases of z_a, z_b (shared-metric compat)
+            sensor_a, sensor_b     : 'D' / 'E' / 'F'
+            pair                   : name
+        """
+        if name not in self._PAIR_TABLE:
+            raise ValueError(
+                f"Unknown pair '{name}', expected one of {list(self._PAIR_TABLE)}"
+            )
+        sa, sb = self._PAIR_TABLE[name]
+
+        h_a, z_a = self._enc(x_a, sa)
+        h_b, z_b = self._enc(x_b, sb)
+
+        return {
+            "pair": name, "sensor_a": sa, "sensor_b": sb,
+            "h_a": h_a, "h_b": h_b,
+            "z_a": z_a, "z_b": z_b,
+            # Aliases so _tri_log_metrics / _transitive_df_metric (which read
+            # mu_a / mu_b) work without branching on model type.
+            "mu_a": z_a, "mu_b": z_b,
+        }
+
+    def forward(self, batch):
+        """Joint forward over all three pairs (dict {'de','ef','fd'})."""
+        out = {}
+        for name, (x_a, x_b) in batch.items():
+            out[name] = self.forward_pair(x_a, x_b, name)
+        return out

@@ -161,6 +161,48 @@ cross_modal_vae3:
   logistic_batch_size: 256
   logistic_epochs: 20
 
+cross_modal_clr3:
+  # Tri-modal PLAIN-CONTRASTIVE baseline (Daimon + eFlesh + FlexiTac).
+  # Same three encoders as cross_modal_vae3, but plain projection heads and
+  # NO decoders / NO KL. Each step samples one batch from each of
+  # de_pair / ef_pair / fd_pair and optimizes a single combined loss:
+  # 3-pair NT-Xent contrastive in the shared latent space, applied at full
+  # weight from epoch 0. The lean reconstruction-free baseline.
+  seed: 42
+  batch_size: 64
+  start_epoch: 0
+  epochs: 100
+  pretrain: True
+  learning_rate: 1.0e-4
+
+  # Daimon image encoder (ResNet)
+  resnet: "resnet18"
+
+  # eFlesh magnetic encoder (MLP)
+  magnetic_input_dim: 15
+  magnetic_hidden_dims: [64, 128, 256]
+
+  # FlexiTac small CNN encoder
+  flexitac_in_h: 12
+  flexitac_in_w: 16
+  flexitac_encoder_channels: [32, 64]
+  flexitac_pool_h: 6
+  flexitac_pool_w: 8
+  # Unused by the contrastive model (no decoders); kept only because
+  # train_tri's startup print reads model_details['flexitac_decoder_channels'].
+  flexitac_decoder_channels: [64, 32]
+
+  # shared latent space dimension (contrastive projection-head output)
+  projection_dim: 16
+
+  # loss / optimizer
+  optimizer: "Adam"
+  weight_decay: 1.0e-4
+  temperature: 0.03  # NT-Xent temperature
+
+  logistic_batch_size: 256
+  logistic_epochs: 20
+
 barlow_twins:
   # train options
   seed: 42 # sacred handles automatic seeding when passed in the config

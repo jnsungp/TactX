@@ -5,7 +5,7 @@ from simclr.modules import LARS as LARS_simclr
 import yaml
 from simclr.modules import NT_Xent
 from joint_embedding_learning.barlow_twins.barlow import BarlowLoss, LARS
-from joint_embedding_learning.utils.losses import CWCL, CrossModalVAELoss, CrossModalVAE3Loss, CrossModalVAE3UniforceLoss, CrossModalVAE3CWCLLoss
+from joint_embedding_learning.utils.losses import CWCL, CrossModalVAELoss, CrossModalVAE3Loss, CrossModalVAE3UniforceLoss, CrossModalVAE3CWCLLoss, CrossModalCLR3Loss
 
 
 def load_optimizer(args, model):
@@ -86,6 +86,12 @@ def get_loss(args, model_name):
                 f"Unknown loss '{loss_type}' for cross_modal_vae3 "
                 f"(expected 'infonce', 'uniforce', 'l2', or 'cwcl')"
             )
+    elif model_name == 'cross_modal_clr3':
+        # Tri-modal plain-contrastive baseline: 3-pair NT-Xent, no recon/KL.
+        criterion = CrossModalCLR3Loss(
+            batch_size=args.batch_size,
+            temperature=args.temperature,
+        )
     else:
         raise ValueError(f"Model {model_name} not found")
     return criterion

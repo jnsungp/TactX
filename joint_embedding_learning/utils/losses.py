@@ -581,3 +581,71 @@ class CrossModalVAE3CWCLLoss(nn.Module):
         for k, v in kl_per_sensor_pair.items():
             info[f"kl_{k}"] = v
         return info
+
+
+class CrossModalCLR3Loss(nn.Module):
+    """Tri-modal *plain contrastive* loss for CrossModalCLR3.
+
+    Pair-wise NT-Xent over the de / ef / fd projections — and nothing else.
+    No reconstruction, no KL: this is the lean contrastive baseline.
+
+        Loss = sum_{p in {de,ef,fd}}  NT-Xent(z_a^p, z_b^p)
+
+    Contrastive alignment is applied at FULL weight from epoch 0. The ``alpha``
+    (InfoNCE curriculum) and ``beta`` (KL) arguments are accepted only for
+    call-signature compatibility with the VAE3 losses and are ignored — there
+    is no recon term to warm up before, and no KL term.
+
+    The returned info dict keeps the CrossModalVAE3Loss keys (``infonce``,
+    ``recon``, ``kl``, ``infonce_{pair}``, ``recon_{pair}``, ``alpha_infonce``,
+    ``beta``) so the existing tri training / validation / logging code consumes
+    it unchanged — ``recon`` and ``kl`` (and their per-pair entries) are
+    reported as a constant 0.
+    """
+
+    PAIR_NAMES = ("de", "ef", "fd")
+
+    def __init__(self, batch_size, temperature, lambda_recon=None):
+        super().__init__()
+        if NT_Xent is None:
+            raise ImportError("simclr.modules.NT_Xent is required for CrossModalCLR3Loss")
+        # Three independent NT_Xent objects (state-free, but keep symmetric API).
+        self.nt_xent_de = NT_Xent(batch_size, temperature, 1)
+        self.nt_xent_ef = NT_Xent(batch_size, temperature, 1)
+        self.nt_xent_fd = NT_Xent(batch_size, temperature, 1)
+
+    def _nt_for(self, pair):
+        return {"de": self.nt_xent_de, "ef": self.nt_xent_ef,
+                "fd": self.nt_xent_fd}[pair]
+
+    def forward(self, outs, targets=None, beta=0.0, alpha=1.0, meta=None):
+        """
+        Args:
+            outs: dict {pair: per-pair dict from CrossModalCLR3.forward_pair}.
+            targets, beta, alpha, meta: accepted and ignored (signature parity
+                with the VAE3 losses — no recon, no KL, no curriculum here).
+        """
+        info_per_pair = {}
+        L_info_total = 0.0
+
+        for pair in self.PAIR_NAMES:
+            out = outs[pair]
+            L_info = self._nt_for(pair)(out["z_a"], out["z_b"])
+            L_info_total = L_info_total + L_info
+            info_per_pair[pair] = L_info.detach()
+
+        total = L_info_total
+        zero = torch.zeros((), device=total.device)
+
+        info = {
+            "total": total,
+            "infonce": L_info_total.detach(),
+            "recon": zero,
+            "kl": zero,
+            "beta": torch.tensor(0.0),
+            "alpha_infonce": torch.tensor(1.0),
+        }
+        for pair in self.PAIR_NAMES:
+            info[f"infonce_{pair}"] = info_per_pair[pair]
+            info[f"recon_{pair}"] = zero
+        return info
