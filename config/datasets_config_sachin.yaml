@@ -78,7 +78,7 @@ dataset_sachin:
 # ============================================================
 dataset_sachin_static:
   dataset_type: 'cross_modal_tri'
-  data_root: 'latent_data_processed_static'
+  data_root: '/media/ExtHDD/sachin/latent_data_processed_static'
 
   image_size: 224
 
@@ -131,7 +131,7 @@ dataset_sachin_static:
 # ============================================================
 dataset_sachin_static_deform:
   dataset_type: 'cross_modal_tri'
-  data_root: 'latent_data_processed_static'
+  data_root: '/media/ExtHDD/sachin/latent_data_processed_static'
 
   image_size: 224
 
@@ -232,7 +232,7 @@ dataset_sachin_dynamic_pnp:
 # ============================================================
 dataset_sachin_static12:
   dataset_type: 'cross_modal_tri'
-  data_root: 'latent_data_processed_static'
+  data_root: '/media/ExtHDD/sachin/latent_data_processed_static'
 
   # Episode-level train/val split (whole episodes held out — no near-duplicate
   # leakage). Other dataset entries omit this key -> default frame-level split.
@@ -389,7 +389,58 @@ dataset_sachin_dynamic_paired:
 # ============================================================
 dataset_sachin_static12_framesplit:
   dataset_type: 'cross_modal_tri'
-  data_root: 'latent_data_processed_static'
+  data_root: '/media/ExtHDD/sachin/latent_data_processed_static'
+
+  image_size: 224
+
+  daimon_transforms:
+    - 'resize'
+    - 'normalize'
+  daimon_stats:
+    mean: [0.068795, -0.001895, -0.008578]
+    std:  [0.205663, 0.249837, 0.248479]
+
+  eflesh_transforms:
+    - 'normalize'
+  eflesh_stats:
+    mean: [24.501642, -350.678070, 43.907925, -1242.634277, 16.994249, 685.652405, 116.613220, 1696.147827, -856.663696, -62.472942, -2021.795288, -105.722397, -1106.986816, -41.088001, 104.477585]
+    std:  [829.504089, 1248.281860, 596.034790, 1630.981567, 484.513275, 1413.057983, 590.679871, 1823.940918, 1565.082153, 748.707703, 2070.673828, 1184.044189, 1731.826172, 308.732666, 814.720520]
+
+  flexitac_transforms:
+    - 'normalize'
+  flexitac_stats:
+    mean: 0.092803
+    std:  0.182347
+
+  pairs:
+    de:
+      sensor_a: 'daimon'
+      sensor_b: 'eflesh'
+      root:    'de_pair'
+      extra_transforms_a: ['rot180']
+    ef:
+      sensor_a: 'eflesh'
+      sensor_b: 'flexi'
+      root:    'ef_pair'
+      extra_transforms_b: ['rot180']
+    fd:
+      sensor_a: 'flexi'
+      sensor_b: 'daimon'
+      root:    'fd_pair'
+      extra_transforms_b: ['rot180']
+
+# ============================================================
+# Padded dataset — /media/ExtHDD/sachin/latent_data_processed_padded
+# 11 objects: circle cylinder ellipse eraser large_ball line plug
+#             shear small_ball spam triangle
+# Stats taken from dataset_sachin_static12 (same object set, same sensor rig).
+# episode_val_split: whole episodes held out (no near-duplicate leakage).
+# ============================================================
+dataset_sachin_padded:
+  dataset_type: 'cross_modal_tri'
+  data_root: '/media/ExtHDD/sachin/latent_data_processed_padded'
+
+  episode_val_split: true
 
   image_size: 224
 

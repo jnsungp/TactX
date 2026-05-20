@@ -570,15 +570,38 @@ class DynamicSelfDataset(Dataset):
     def __init__(self, sensor_root, sensor_name,
                  transform=None, mean=None, std=None, device='cpu'):
         files = sorted(glob.glob(os.path.join(sensor_root, '*.pt')),
-                       key=lambda p: sort_order(os.path.basename(p)))
+                       key=_parse_ep_fr)
+        # Fall back to one extra level ({object}/ep****_fr****.pt layout).
+        ep_id_offsets = [0] * len(files)
+        if not files:
+            subdirs = sorted(d for d in glob.glob(os.path.join(sensor_root, '*'))
+                             if os.path.isdir(d))
+            files = []
+            ep_id_offsets = []
+            for obj_idx, subdir in enumerate(subdirs):
+                obj_files = sorted(glob.glob(os.path.join(subdir, '*.pt')),
+                                   key=_parse_ep_fr)
+                files.extend(obj_files)
+                ep_id_offsets.extend([obj_idx * 100000] * len(obj_files))
+
         self.sensor_name = sensor_name
         self.files = files
         self.episode_per_sample = []
         self.frame_per_sample = []
-        for p in files:
+        for p, offset in zip(files, ep_id_offsets):
             ep, fr = _parse_ep_fr(p)
-            self.episode_per_sample.append(ep)
+            self.episode_per_sample.append(ep + offset)
             self.frame_per_sample.append(fr)
+
+        # Mark the minimum frame_id per episode as no-contact (padding/reference frame).
+        ep_min_fr = defaultdict(lambda: float('inf'))
+        for ep, fr in zip(self.episode_per_sample, self.frame_per_sample):
+            if fr < ep_min_fr[ep]:
+                ep_min_fr[ep] = fr
+        self.is_nocontact_per_sample = [
+            fr == ep_min_fr[ep]
+            for ep, fr in zip(self.episode_per_sample, self.frame_per_sample)
+        ]
 
         self.transform = transform
         self.mean = torch.tensor(mean, dtype=torch.float32) if mean is not None else None
@@ -615,7 +638,33 @@ class DynamicSelfDataset(Dataset):
             x = self.transform(x)
         episode_id = torch.tensor(self.episode_per_sample[idx], dtype=torch.long).to(self.device)
         frame_id = torch.tensor(self.frame_per_sample[idx], dtype=torch.long).to(self.device)
-        return x, [episode_id, frame_id]
+        is_nocontact = torch.tensor(self.is_nocontact_per_sample[idx], dtype=torch.bool)
+        return x, [episode_id, frame_id, is_nocontact]
+
+
+class TemporalPairDataset(Dataset):
+    """Consecutive (frame_t, frame_{t+1}) pairs from the same episode.
+
+    Built from a DynamicSelfDataset. Adjacent entries in the sorted file list
+    that share the same episode_id are treated as consecutive frames.
+    Used to compute L_slow = ||mu_t - mu_{t+1}||^2 during training.
+    """
+
+    def __init__(self, base):
+        self.base = base
+        eps = base.episode_per_sample
+        self.pairs = [
+            (i, i + 1) for i in range(len(eps) - 1) if eps[i] == eps[i + 1]
+        ]
+
+    def __len__(self):
+        return len(self.pairs)
+
+    def __getitem__(self, idx):
+        i, j = self.pairs[idx]
+        x_t, _ = self.base[i]
+        x_t1, _ = self.base[j]
+        return x_t, x_t1
 
 
 def _build_sensor_transforms(dataset_details, sensor_name, image_size):
@@ -730,10 +779,10 @@ def get_dynamic_self_datasets(dataset_name, dataset_details, data_split='train',
         val_datasets   : dict {'D': ds_D_val, 'E': ds_E_val, 'F': ds_F_val}
         empty_test     : {}
     """
-    data_root = dataset_details['data_root']
-    # Allow a list of roots so one dataset entry can pool e.g. cylinder + plug
-    # dynamic data: data_root: ['.../cylinder', '.../plug'].
-    data_roots = [data_root] if isinstance(data_root, str) else list(data_root)
+    # sensor_roots: per-sensor override (e.g. different pair dirs per modality).
+    # Falls back to data_root for sensors not listed.
+    sensor_roots_cfg = dataset_details.get('sensor_roots', {})
+    data_root = dataset_details.get('data_root', None)
     image_size = dataset_details.get('image_size', 224)
     sensors = dataset_details.get('sensors', {'D': 'daimon', 'E': 'eflesh', 'F': 'flexi'})
     train_frac = float(dataset_details.get('train_frac', 0.8))
@@ -743,6 +792,8 @@ def get_dynamic_self_datasets(dataset_name, dataset_details, data_split='train',
 
     for key, sensor_name in sensors.items():
         transform, mean, std = _build_sensor_transforms(dataset_details, sensor_name, image_size)
+        root = sensor_roots_cfg.get(key, data_root)
+        data_roots = [root] if isinstance(root, str) else list(root)
         per_root = [
             DynamicSelfDataset(
                 os.path.join(dr, sensor_name), sensor_name,
@@ -752,17 +803,83 @@ def get_dynamic_self_datasets(dataset_name, dataset_details, data_split='train',
             for dr in data_roots
         ]
         ds_full = per_root[0] if len(per_root) == 1 else ConcatDataset(per_root)
-        n = len(ds_full)
-        train_len = int(train_frac * n)
-        val_len = n - train_len
-        ds_train, ds_val = random_split(
-            ds_full, [train_len, val_len],
-            generator=torch.Generator().manual_seed(0),
-        )
-        train_datasets[key] = ds_train
-        val_datasets[key] = ds_val
+
+        use_ep_split = (bool(dataset_details.get('episode_val_split', False))
+                        and hasattr(ds_full, 'episode_per_sample'))
+        if use_ep_split:
+            groups = defaultdict(list)
+            for i, ep_full in enumerate(ds_full.episode_per_sample):
+                obj_id = ep_full // 100000
+                ep_id  = ep_full % 100000
+                groups[(obj_id, ep_id)].append(i)
+            by_obj = defaultdict(list)
+            for gk in groups:
+                by_obj[gk[0]].append(gk)
+            train_idx, val_idx = [], []
+            val_stride = max(2, round(1.0 / max(1e-6, 1.0 - train_frac)))
+            for obj_id in sorted(by_obj):
+                for j, gk in enumerate(sorted(by_obj[obj_id])):
+                    (val_idx if j % val_stride == 0 else train_idx).extend(groups[gk])
+            train_idx.sort()
+            val_idx.sort()
+            train_datasets[key] = Subset(ds_full, train_idx)
+            val_datasets[key]   = Subset(ds_full, val_idx)
+            print(f"  [{key}/{sensor_name}] episode-level split: "
+                  f"{len(train_idx)} train / {len(val_idx)} val "
+                  f"(val=every {val_stride}th ep per object)")
+        else:
+            n = len(ds_full)
+            train_len = int(train_frac * n)
+            val_len = n - train_len
+            ds_train, ds_val = random_split(
+                ds_full, [train_len, val_len],
+                generator=torch.Generator().manual_seed(0),
+            )
+            train_datasets[key] = ds_train
+            val_datasets[key]   = ds_val
 
     return train_datasets, val_datasets, {}
+
+
+def get_temporal_pair_datasets(dataset_name, device='cpu'):
+    """Per-modality TemporalPairDataset dict for L_slow training.
+
+    Same config lookup as get_dynamic_self_datasets but returns consecutive
+    (frame_t, frame_{t+1}) pair datasets rather than shuffled singletons.
+    Only the training split is returned (L_slow is not validated).
+
+    Returns:
+        dict {'D': TemporalPairDataset, 'E': ..., 'F': ...}
+    """
+    dataset_config = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        'config', 'datasets_config.yaml',
+    )
+    with open(dataset_config, 'r') as f:
+        config = yaml.safe_load(f)
+    dataset_details = config[dataset_name]
+
+    sensor_roots_cfg = dataset_details.get('sensor_roots', {})
+    data_root = dataset_details.get('data_root', None)
+    image_size = dataset_details.get('image_size', 224)
+    sensors = dataset_details.get('sensors', {'D': 'daimon', 'E': 'eflesh', 'F': 'flexi'})
+
+    result = {}
+    for key, sensor_name in sensors.items():
+        transform, mean, std = _build_sensor_transforms(dataset_details, sensor_name, image_size)
+        root = sensor_roots_cfg.get(key, data_root)
+        data_roots = [root] if isinstance(root, str) else list(root)
+        pair_datasets = []
+        for dr in data_roots:
+            base = DynamicSelfDataset(
+                os.path.join(dr, sensor_name), sensor_name,
+                transform=transform, mean=mean, std=std,
+                device=device,
+            )
+            pair_datasets.append(TemporalPairDataset(base))
+        result[key] = pair_datasets[0] if len(pair_datasets) == 1 else ConcatDataset(pair_datasets)
+        print(f"[temporal_pairs] {sensor_name}: {len(result[key])} consecutive pairs")
+    return result
 
 
 def get_all_contrastive_datasets(dataset_name, data_split='train', device='cpu', objects=None):

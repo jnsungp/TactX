@@ -132,7 +132,7 @@ def main():
     if args.lr is not None:
         model_details['learning_rate'] = args.lr
 
-    project = 'CMTEJ_debug' if args.debug else 'CMTEJ_contrastive_sachin'
+    project = 'CMTEJ_debug' if args.debug else 'CMTEJ_sachin_static'
     output_folder = (f"{args.model_name}_{dataset_details['dataset_type']}_"
                      f"sachin_{args.dataset_name}_{args.run_name}")
     wandb.init(project=project, name=output_folder, id=output_folder, resume=False)

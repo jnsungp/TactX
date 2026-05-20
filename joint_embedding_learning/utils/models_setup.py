@@ -7,7 +7,9 @@ from joint_embedding_learning.cross_modal.model import (
 )
 from simclr import SimCLR
 from simclr.modules import NT_Xent, get_resnet
-from t3.models import T3
+# NOTE: `t3` is imported lazily inside the T3 branch of get_trained_model() so
+# that models that don't use T3 (e.g. cross_modal_vae3) can run without the
+# `t3` package installed.
 from omegaconf import OmegaConf  # Import OmegaConf
 
 import torch
@@ -115,9 +117,6 @@ def get_model(model_name, model_details, pretrained=False):
         return model
 
     elif model_name == 'cross_modal_clr3':
-        # Tri-modal plain-contrastive baseline: same three encoders as
-        # cross_modal_vae3 but plain projection heads (projection_dim output,
-        # no (mu, logvar)) and no decoders.
         image_encoder = get_resnet(model_details['resnet'], pretrained=pretrained)
         n_features = image_encoder.fc.in_features
 
@@ -228,21 +227,8 @@ def get_trained_model(model_name, model_details, dataset_type, run_name, device)
         model.eval()
         return model
 
-    elif model_name == 'cross_modal_clr3':
-        if run_name == 'pretrained':
-            model = get_model(model_name, model_details, pretrained=True)
-        elif run_name == 'random_init':
-            model = get_model(model_name, model_details, pretrained=False)
-        else:
-            model = get_model(model_name, model_details)
-            model_fp = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'checkpoints', dataset_type, model_name, run_name, 'model.pt')
-            model.load_state_dict(torch.load(model_fp, map_location=device))
-
-        model = model.to(device)
-        model.eval()
-        return model
-
     elif model_name == 'T3':
+        from t3.models import T3
         if isinstance(model_details, dict):
             model_details = OmegaConf.create(model_details)
         model = T3(model_details)

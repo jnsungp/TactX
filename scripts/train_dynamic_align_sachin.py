@@ -1,22 +1,22 @@
 """
-Sachin variant of train_dynamic_align.py: same paired-static + dynamic-align
-training (MMD bridge + cycle on unpaired dynamic), but loads the paired
-dataset from config/datasets_config_sachin.yaml via
-joint_embedding_learning.data.datasets_sachin so per-pair geometric
-corrections (rot180) are applied at __getitem__ time.
+Sachin paired-static training + L_slow + L_anchor on dynamic data.
 
-Dynamic dataset is loaded normally (no per-pair transforms needed there).
+Extends train_static_sachin.py with two temporal losses that use the
+unpaired per-modality dynamic dataset (teleop episodes):
 
-Usage (defaults: cylinder static, dataset_sachin):
+  L_slow  : ||mu_t - mu_{t+1}||^2  — consecutive-frame smoothness
+  L_anchor: ||mu_nocontact||^2      — no-contact/padding frames → z_0 = 0
+
+Both losses are zero by default so this is identical to train_static_sachin
+when lambda_slow=0 and lambda_anchor=0.
+
+Usage:
     python scripts/train_dynamic_align_sachin.py \
         --device cuda:0 \
-        --run_name dynalign_sachin
-
-Resume from a Stage-1 dynamic_pretrain checkpoint:
-    python scripts/train_dynamic_align_sachin.py \
-        --device cuda:0 \
-        --run_name dynalign_sachin_from_dynpre \
-        --resume_from checkpoints/cross_modal_tri_dynamic/cross_modal_vae3/<...>/model.pt
+        --run_name slow_anchor \
+        --objects cylinder plug \
+        --lambda_slow 0.1 \
+        --lambda_anchor 0.05
 """
 
 import argparse
@@ -26,16 +26,17 @@ from datetime import datetime
 import wandb
 import yaml
 
-from joint_embedding_learning.data.datasets import get_all_contrastive_datasets
+from joint_embedding_learning.data.datasets import (
+    get_all_contrastive_datasets,
+    get_temporal_pair_datasets,
+)
 from joint_embedding_learning.data.datasets_sachin import (
     get_paired_tri_datasets_sachin,
 )
 from joint_embedding_learning.training_dynamic_align import train_tri_dynamic_align
 
 
-# Static paired objects. Cylinder matches the dynamic teleop object set;
-# ball / plug deliberately excluded for the dynamic-align scheme.
-DEFAULT_STATIC_OBJECTS = ['cylinder']
+DEFAULT_STATIC_OBJECTS = ['cylinder', 'plug']
 
 
 def _load_dataset_details_sachin(dataset_name):
@@ -80,6 +81,10 @@ def main():
     parser.add_argument('--cycle_warmup_start', type=int, default=None)
     parser.add_argument('--cycle_warmup_epochs', type=int, default=None)
     parser.add_argument('--cycle_target', choices=['mu', 'z'], default=None)
+    parser.add_argument('--lambda_slow', type=float, default=None,
+                        help='Weight for L_slow = ||mu_t - mu_{t+1}||^2 (default: 0, disabled).')
+    parser.add_argument('--lambda_anchor', type=float, default=None,
+                        help='Weight for L_anchor = ||mu_nocontact||^2 (default: 0, disabled).')
 
     args = parser.parse_args()
 
@@ -97,7 +102,8 @@ def main():
     # Inject new-loss hyperparameter overrides into model_details.
     for key in ('gamma_mmd_max', 'mmd_warmup_epochs',
                 'delta_cycle_max', 'cycle_warmup_start',
-                'cycle_warmup_epochs', 'cycle_target'):
+                'cycle_warmup_epochs', 'cycle_target',
+                'lambda_slow', 'lambda_anchor'):
         v = getattr(args, key)
         if v is not None:
             model_details[key] = v
@@ -123,6 +129,15 @@ def main():
         args.dynamic_dataset_name, device=args.device,
     )
 
+    # Temporal consecutive-pair datasets for L_slow (only built if lambda_slow > 0).
+    use_slow = model_details.get('lambda_slow', 0.0) or 0.0
+    temporal_train = None
+    if float(use_slow) > 0:
+        print(f"Building temporal pair datasets from '{args.dynamic_dataset_name}' for L_slow...")
+        temporal_train = get_temporal_pair_datasets(
+            args.dynamic_dataset_name, device=args.device,
+        )
+
     train_tri_dynamic_align(
         paired_train_datasets=paired_train,
         dynamic_train_datasets=dynamic_train,
@@ -135,6 +150,7 @@ def main():
         run_name=args.run_name,
         device=args.device,
         resume_from=args.resume_from,
+        temporal_train_datasets=temporal_train,
     )
 
 

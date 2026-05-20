@@ -257,7 +257,7 @@ dataset_cross_modal_tri_object:
     - 'normalize'
   eflesh_stats:
     mean: [26.782779, -514.703113, 115.995235, -2023.415566, 7.838985, 1047.581115, 223.107125, 2531.489869, -1088.107298, -21.523144, -2981.299712, -30.560990, -1813.462424, -38.179990, 218.029818]
-    std:  [786.388902, 1407.679265, 598.348392, 2106.474565, 532.395415, 1565.877061, 654.217583, 2274.906212, 1613.502900, 663.628286, 2402.268524, 744.133281, 2340.596627, 331.950135, 697.778074]
+    std:  [786.388902, 1407.679265, 598.348392, 2106.474565, 532.395415, 1565.877061, 654.217583, 2274.906218, 1613.502900, 663.628286, 2402.268524, 744.133281, 2340.596627, 331.950135, 697.778074]
 
   flexitac_transforms:
     - 'normalize'
@@ -278,3 +278,40 @@ dataset_cross_modal_tri_object:
       sensor_a: 'flexi'
       sensor_b: 'daimon'
       root:    'fd_pair'
+
+# Dynamic dataset drawn from the padded paired data (all 11 objects).
+# sensor_roots maps each modality to the pair dir that contains it (no duplication).
+# Stats match dataset_sachin_padded (the static training default).
+dataset_cross_modal_tri_dynamic_sachin_padded:
+  dataset_type: 'cross_modal_tri_dynamic'
+  episode_val_split: true
+  sensor_roots:
+    D: '/media/ExtHDD/sachin/latent_data_processed_padded/de_pair'
+    E: '/media/ExtHDD/sachin/latent_data_processed_padded/de_pair'
+    F: '/media/ExtHDD/sachin/latent_data_processed_padded/ef_pair'
+
+  image_size: 224
+
+  daimon_transforms:
+    - 'resize'
+    - 'normalize'
+  daimon_stats:
+    mean: [0.068795, -0.001895, -0.008578]
+    std:  [0.205663, 0.249837, 0.248479]
+
+  eflesh_transforms:
+    - 'normalize'
+  eflesh_stats:
+    mean: [24.501642, -350.678070, 43.907925, -1242.634277, 16.994249, 685.652405, 116.613220, 1696.147827, -856.663696, -62.472942, -2021.795288, -105.722397, -1106.986816, -41.088001, 104.477585]
+    std:  [829.504089, 1248.281860, 596.034790, 1630.981567, 484.513275, 1413.057983, 590.679871, 1823.940918, 1565.082153, 748.707703, 2070.673828, 1184.044189, 1731.826172, 308.732666, 814.720520]
+
+  flexitac_transforms:
+    - 'normalize'
+  flexitac_stats:
+    mean: 0.092803
+    std:  0.182347
+
+  sensors:
+    D: 'daimon'
+    E: 'eflesh'
+    F: 'flexi'
