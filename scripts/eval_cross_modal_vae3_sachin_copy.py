@@ -17,9 +17,12 @@ What it produces (under --out_dir):
 
 Usage:
 python scripts/eval_cross_modal_vae3_sachin_copy.py \
-    --checkpoint_dir checkpoints/cross_modal_tri/cross_modal_vae3/dataset_sachin_dynamic_paired_run_dynamic_paired_efs2_20260519_043717 \
+    --checkpoint_dir checkpoints/cross_modal_tri/cross_modal_vae3/dataset_sachin_static12_run_uniforce_static12_20260519_072646 \
+    --dataset_name dataset_sachin_static12 \
+    --objects cylinder \
     --dynamic_data_root latent_data_processed_dynamic/pnp latent_data_processed_dynamic/wipe latent_data_processed_dynamic/plug \
     --dynamic_objects pnp wipe plug \
+    --ef_stride 3 \
     --device cuda:0
 
 Optional:
@@ -55,6 +58,20 @@ from joint_embedding_learning.utils.models_setup import get_model
 
 _SENSORS = ('D', 'E', 'F')
 _PAIRS = ('de', 'ef', 'fd')
+
+
+def _filter_dataset_by_episode(dataset, target_episodes):
+    """Return a Subset containing only samples from specified episode ids."""
+    from torch.utils.data import Subset as _Subset
+    if isinstance(dataset, _Subset):
+        base = dataset.dataset
+        indices = list(dataset.indices)
+        keep = [i for i in indices
+                if base.episode_per_sample[i] in target_episodes]
+    else:
+        keep = [i for i in range(len(dataset))
+                if dataset.episode_per_sample[i] in target_episodes]
+    return _Subset(dataset.dataset if isinstance(dataset, _Subset) else dataset, keep)
 
 
 # ---------------------------------------------------------------------------
@@ -796,12 +813,14 @@ def main():
 
         # Extract from each root and accumulate
         all_dpm = {pk: ([], []) for pk in _PAIRS}  # pk -> ([mu_a...], [mu_b...])
+        all_dpm_ep0 = {pk: ([], []) for pk in _PAIRS}  # ep0-only
         _task_labels = {s: [] for s in _SENSORS}
+        _task_labels_ep0 = {s: [] for s in _SENSORS}
         for root_i, (droot, dobjs) in enumerate(zip(dyn_roots, dyn_objs_per_root)):
             task_name = dobjs[0] if len(dobjs) == 1 else os.path.basename(droot)
             dyn_details = dict(sachin_cfg[args.dataset_name])
             dyn_details['data_root'] = droot
-            dyn_pairs_tr_i, _, _ = get_cross_modal_tri_datasets_sachin(
+            dyn_pairs_tr_i, dyn_pairs_val_i, _ = get_cross_modal_tri_datasets_sachin(
                 args.dataset_name, dyn_details, device='cpu', objects=dobjs,
             )
             print(f'  [{task_name}] sizes: {{{", ".join(f"{k}: {len(v)}" for k,v in dyn_pairs_tr_i.items())}}}')
@@ -812,6 +831,19 @@ def main():
                 sa, sb = {'de': ('D', 'E'), 'ef': ('E', 'F'), 'fd': ('F', 'D')}[pk]
                 _task_labels[sa].extend([task_name] * len(mu_a))
                 _task_labels[sb].extend([task_name] * len(mu_b))
+
+                # ep0-only: filter from the FULL dataset (train+val combined)
+                # because episode_val_split may have put ep0 in val
+                base_ds = (dyn_pairs_tr_i[pk].dataset
+                           if isinstance(dyn_pairs_tr_i[pk], torch.utils.data.Subset)
+                           else dyn_pairs_tr_i[pk])
+                ep0_ds = _filter_dataset_by_episode(base_ds, {0})
+                if len(ep0_ds) > 0:
+                    mu_a0, mu_b0 = extract_pair_mu(ep0_ds, pk, model, args.device)
+                    all_dpm_ep0[pk][0].append(mu_a0)
+                    all_dpm_ep0[pk][1].append(mu_b0)
+                    _task_labels_ep0[sa].extend([task_name] * len(mu_a0))
+                    _task_labels_ep0[sb].extend([task_name] * len(mu_b0))
 
         # Concat per pair
         _dpm = {}
@@ -824,7 +856,23 @@ def main():
             'F': torch.cat([_dpm['ef'][1], _dpm['fd'][0]], dim=0),
         }
         print('Dynamic μ sizes:', {s: len(v) for s, v in dyn_mus.items()})
+
+        # ep0-only concat
+        _dpm_ep0 = None
+        if all(len(all_dpm_ep0[pk][0]) > 0 for pk in _PAIRS):
+            _dpm_ep0 = {}
+            for pk in _PAIRS:
+                _dpm_ep0[pk] = (torch.cat(all_dpm_ep0[pk][0], dim=0),
+                                torch.cat(all_dpm_ep0[pk][1], dim=0))
+            dyn_mus_ep0 = {
+                'D': torch.cat([_dpm_ep0['de'][0], _dpm_ep0['fd'][1]], dim=0),
+                'E': torch.cat([_dpm_ep0['de'][1], _dpm_ep0['ef'][0]], dim=0),
+                'F': torch.cat([_dpm_ep0['ef'][1], _dpm_ep0['fd'][0]], dim=0),
+            }
+            print('Dynamic μ (ep0 only):', {s: len(v) for s, v in dyn_mus_ep0.items()})
     else:
+        _dpm_ep0 = None
+        _task_labels_ep0 = None
         dyn_train, _dv, _ = get_all_contrastive_datasets(
             args.dynamic_dataset_name, device='cpu',
         )
@@ -911,6 +959,25 @@ def main():
             n_max=args.max_tsne_points,
             normalize=not args.no_l2_norm,
             perplexity=args.tsne_perplexity)
+    # ep0-only dynamic t-SNE
+    if _dpm_ep0 is not None:
+        print('Computing t-SNE (dynamic ep0 only)...')
+        plot_tsne_dynamic(dyn_mus_ep0, os.path.join(out_dir, 'tsne_dynamic_ep0.png'),
+                          n_max=args.max_tsne_points,
+                          normalize=not args.no_l2_norm,
+                          perplexity=args.tsne_perplexity)
+        plot_tsne_dynamic_paired(
+            _dpm_ep0, os.path.join(out_dir, 'tsne_dynamic_paired_ep0.png'),
+            n_max=args.max_tsne_points,
+            normalize=not args.no_l2_norm,
+            perplexity=args.tsne_perplexity)
+        if _task_labels_ep0 is not None and len(set(sum((_task_labels_ep0[s] for s in _SENSORS), []))) > 1:
+            plot_tsne_dynamic_bytask(
+                dyn_mus_ep0, _task_labels_ep0,
+                os.path.join(out_dir, 'tsne_dynamic_bytask_ep0.png'),
+                n_max=args.max_tsne_points,
+                normalize=not args.no_l2_norm,
+                perplexity=args.tsne_perplexity)
     plot_tsne_static_vs_dynamic(
         static_mu_per_sensor, dyn_mus,
         os.path.join(out_dir, 'tsne_static_vs_dynamic.png'),
