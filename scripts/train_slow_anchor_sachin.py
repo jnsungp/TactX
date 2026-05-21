@@ -144,23 +144,28 @@ def main():
     if pair_strides:
         print(f"Per-pair frame strides: {pair_strides}")
 
+    # Load samples to CPU; training loop moves each batch to GPU via .to(args.device).
+    # Loading directly to cuda OOMs at ~24 GB once 3 paired + 3 L_slow + 3 L_anchor
+    # forwards are in flight per step.
     paired_train, paired_val, _ = get_paired_tri_datasets_sachin(
-        args.dataset_name, device=args.device, objects=args.objects,
+        args.dataset_name, device='cpu', objects=args.objects,
         pair_strides=pair_strides or None,
     )
 
-    # Dynamic data — only loaded when at least one temporal loss is active.
+    # Per-sensor data — only loaded when at least one temporal loss is active.
     dynamic_train = None
     temporal_train = None
     if args.lambda_slow > 0 or args.lambda_anchor > 0:
         print(f"Loading dynamic dataset '{args.dynamic_dataset_name}'...")
         dynamic_train, _, _ = get_all_contrastive_datasets(
-            args.dynamic_dataset_name, device=args.device,
+            args.dynamic_dataset_name, device='cpu',
+            objects=args.objects,
         )
         if args.lambda_slow > 0:
             print("Building temporal pair datasets for L_slow...")
             temporal_train = get_temporal_pair_datasets(
-                args.dynamic_dataset_name, device=args.device,
+                args.dynamic_dataset_name, device='cpu',
+                objects=args.objects,
             )
 
     train_tri_dynamic_align(

@@ -78,7 +78,7 @@ dataset_sachin:
 # ============================================================
 dataset_sachin_static:
   dataset_type: 'cross_modal_tri'
-  data_root: '/media/ExtHDD/sachin/latent_data_processed_static'
+  data_root: '/home/junsung/cross_modal_tactile/latent_data_processed_static'
 
   image_size: 224
 
@@ -131,7 +131,7 @@ dataset_sachin_static:
 # ============================================================
 dataset_sachin_static_deform:
   dataset_type: 'cross_modal_tri'
-  data_root: '/media/ExtHDD/sachin/latent_data_processed_static'
+  data_root: '/home/junsung/cross_modal_tactile/latent_data_processed_static'
 
   image_size: 224
 
@@ -232,7 +232,7 @@ dataset_sachin_dynamic_pnp:
 # ============================================================
 dataset_sachin_static12:
   dataset_type: 'cross_modal_tri'
-  data_root: '/media/ExtHDD/sachin/latent_data_processed_static'
+  data_root: '/home/junsung/cross_modal_tactile/latent_data_processed_static'
 
   # Episode-level train/val split (whole episodes held out — no near-duplicate
   # leakage). Other dataset entries omit this key -> default frame-level split.
@@ -389,7 +389,7 @@ dataset_sachin_dynamic_paired:
 # ============================================================
 dataset_sachin_static12_framesplit:
   dataset_type: 'cross_modal_tri'
-  data_root: '/media/ExtHDD/sachin/latent_data_processed_static'
+  data_root: '/home/junsung/cross_modal_tactile/latent_data_processed_static'
 
   image_size: 224
 
@@ -438,7 +438,7 @@ dataset_sachin_static12_framesplit:
 # ============================================================
 dataset_sachin_padded:
   dataset_type: 'cross_modal_tri'
-  data_root: '/media/ExtHDD/sachin/latent_data_processed_padded'
+  data_root: '/home/junsung/cross_modal_tactile/tactile_benchmark/data/latent_data_processed_padded'
 
   episode_val_split: true
 
@@ -462,6 +462,118 @@ dataset_sachin_padded:
   flexitac_stats:
     mean: 0.092803
     std:  0.182347
+
+  pairs:
+    de:
+      sensor_a: 'daimon'
+      sensor_b: 'eflesh'
+      root:    'de_pair'
+      extra_transforms_a: ['rot180']
+    ef:
+      sensor_a: 'eflesh'
+      sensor_b: 'flexi'
+      root:    'ef_pair'
+      extra_transforms_b: ['rot180']
+    fd:
+      sensor_a: 'flexi'
+      sensor_b: 'daimon'
+      root:    'fd_pair'
+      extra_transforms_b: ['rot180']
+
+# ============================================================
+# Single-object new dataset — tactile_benchmark/data/latent_data_new_processed
+# 150 episodes total. Explicit val split: 20 held-out episode ids, 130 train.
+# Same de/ef/fd pair layout + rot180 corrections as dataset_sachin_static12.
+# Stats below are PLACEHOLDERS carried over from dataset_sachin_static12 —
+# recompute on this dataset before serious training:
+#   python scripts/compute_per_object_stats.py \
+#       --data_root /home/junsung/cross_modal_tactile/tactile_benchmark/data/latent_data_new_processed \
+#       --splits static --objects <OBJ>
+# Paste the resulting combined_static block into the *_stats fields here AND in
+# dataset_cross_modal_tri_dynamic_sachin_new (config/datasets_config.yaml).
+# ============================================================
+dataset_sachin_new:
+  dataset_type: 'cross_modal_tri'
+  data_root: '/home/junsung/cross_modal_tactile/tactile_benchmark/data/latent_data_new_processed'
+
+  episode_val_split: true
+  val_episode_ids: [0, 6, 13, 22, 36, 44, 45, 54, 58, 67, 75, 81, 88, 97, 111, 119, 120, 129, 133, 142]
+
+  image_size: 224
+
+  # Stats computed on small_ball only (per_object_stats.yaml::small_ball_static).
+  daimon_transforms:
+    - 'resize'
+    - 'normalize'
+  daimon_stats:
+    mean: [0.034527, 0.004822, -0.000229]
+    std:  [0.171310, 0.062119, 0.061471]
+
+  eflesh_transforms:
+    - 'normalize'
+  eflesh_stats:
+    mean: [93.998695, 179.320007, -16.432734, -889.088440, 156.509354, 130.889191, -104.477051, 1196.606812, -264.361511, -87.534500, -1888.986694, 48.766949, -402.123627, -14.586729, -14.329483]
+    std:  [807.420654, 904.564148, 372.574860, 1349.317017, 386.329315, 829.048340, 473.081818, 1428.082520, 1118.719116, 579.895264, 1672.644043, 946.555969, 1084.899048, 268.628418, 412.779938]
+
+  flexitac_transforms:
+    - 'normalize'
+  flexitac_stats:
+    mean: 0.050554
+    std:  0.149914
+
+  pairs:
+    de:
+      sensor_a: 'daimon'
+      sensor_b: 'eflesh'
+      root:    'de_pair'
+      extra_transforms_a: ['rot180']
+    ef:
+      sensor_a: 'eflesh'
+      sensor_b: 'flexi'
+      root:    'ef_pair'
+      extra_transforms_b: ['rot180']
+    fd:
+      sensor_a: 'flexi'
+      sensor_b: 'daimon'
+      root:    'fd_pair'
+      extra_transforms_b: ['rot180']
+
+# ============================================================
+# Old static dataset — latent_data_processed_static, small_ball ONLY.
+# 30 episodes in de/fd, 22 in ef. Episode-level val split: 6 held-out
+# episodes (~20%). Stats computed from small_ball only via:
+#   python scripts/compute_per_object_stats.py \
+#       --data_root latent_data_processed_static --splits static \
+#       --objects small_ball --out per_object_stats_small_ball_static.yaml
+# Same de/ef/fd pair layout + rot180 corrections as other sachin entries.
+# ============================================================
+dataset_sachin_old_smallball:
+  dataset_type: 'cross_modal_tri'
+  data_root: '/home/junsung/cross_modal_tactile/latent_data_processed_static'
+
+  episode_val_split: true
+  val_episode_ids: [0, 5, 10, 15, 20, 25]
+
+  image_size: 224
+
+  daimon_transforms:
+    - 'resize'
+    - 'normalize'
+  daimon_stats:
+    mean: [0.038996, -0.011833, -0.008805]
+    std:  [0.165499, 0.042899, 0.034955]
+
+  eflesh_transforms:
+    - 'normalize'
+  eflesh_stats:
+    mean: [-16.099157, -158.531586, 52.184631, -882.809143, 29.127728, 447.647034, 15.258820, 927.322571, -381.702271, -9.859491, -1264.252319, -9.900281, -651.683167, -41.946766, 67.971817]
+    std:  [474.676117, 1091.651733, 327.636017, 1153.400024, 406.623596, 1130.636475, 490.107666, 1072.617798, 1122.042969, 431.291290, 1505.123291, 459.512665, 1302.586182, 203.272690, 354.999390]
+
+  flexitac_transforms:
+    - 'normalize'
+  flexitac_stats:
+    mean: 0.070275
+    std:  0.168730
 
   pairs:
     de:

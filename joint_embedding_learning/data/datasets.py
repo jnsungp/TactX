@@ -568,7 +568,7 @@ class DynamicSelfDataset(Dataset):
     """
 
     def __init__(self, sensor_root, sensor_name,
-                 transform=None, mean=None, std=None, device='cpu'):
+                 transform=None, mean=None, std=None, device='cpu', objects=None):
         files = sorted(glob.glob(os.path.join(sensor_root, '*.pt')),
                        key=_parse_ep_fr)
         # Fall back to one extra level ({object}/ep****_fr****.pt layout).
@@ -576,6 +576,9 @@ class DynamicSelfDataset(Dataset):
         if not files:
             subdirs = sorted(d for d in glob.glob(os.path.join(sensor_root, '*'))
                              if os.path.isdir(d))
+            if objects is not None:
+                allow = set(objects)
+                subdirs = [d for d in subdirs if os.path.basename(d) in allow]
             files = []
             ep_id_offsets = []
             for obj_idx, subdir in enumerate(subdirs):
@@ -769,7 +772,7 @@ def get_cross_modal_tri_datasets(dataset_name, dataset_details, data_split='trai
     return train_datasets, val_datasets, {}
 
 
-def get_dynamic_self_datasets(dataset_name, dataset_details, data_split='train', device='cpu'):
+def get_dynamic_self_datasets(dataset_name, dataset_details, data_split='train', device='cpu', objects=None):
     """Build per-modality datasets for Stage 1 dynamic self-recon pretrain.
 
     Layout: data_root/{daimon|eflesh|flexi}/ep****_fr****.pt (flat, unpaired)
@@ -798,7 +801,7 @@ def get_dynamic_self_datasets(dataset_name, dataset_details, data_split='train',
             DynamicSelfDataset(
                 os.path.join(dr, sensor_name), sensor_name,
                 transform=transform, mean=mean, std=std,
-                device=device,
+                device=device, objects=objects,
             )
             for dr in data_roots
         ]
@@ -812,21 +815,32 @@ def get_dynamic_self_datasets(dataset_name, dataset_details, data_split='train',
                 obj_id = ep_full // 100000
                 ep_id  = ep_full % 100000
                 groups[(obj_id, ep_id)].append(i)
-            by_obj = defaultdict(list)
-            for gk in groups:
-                by_obj[gk[0]].append(gk)
             train_idx, val_idx = [], []
-            val_stride = max(2, round(1.0 / max(1e-6, 1.0 - train_frac)))
-            for obj_id in sorted(by_obj):
-                for j, gk in enumerate(sorted(by_obj[obj_id])):
-                    (val_idx if j % val_stride == 0 else train_idx).extend(groups[gk])
+            explicit_val_eps = dataset_details.get('val_episode_ids', None)
+            if explicit_val_eps is not None:
+                val_ep_set = set(int(e) for e in explicit_val_eps)
+                for (obj_id, ep_id), idxs in groups.items():
+                    if ep_id in val_ep_set:
+                        val_idx.extend(idxs)
+                    else:
+                        train_idx.extend(idxs)
+                split_label = f"(val eps = {sorted(val_ep_set)})"
+            else:
+                by_obj = defaultdict(list)
+                for gk in groups:
+                    by_obj[gk[0]].append(gk)
+                val_stride = max(2, round(1.0 / max(1e-6, 1.0 - train_frac)))
+                for obj_id in sorted(by_obj):
+                    for j, gk in enumerate(sorted(by_obj[obj_id])):
+                        (val_idx if j % val_stride == 0 else train_idx).extend(groups[gk])
+                split_label = f"(val=every {val_stride}th ep per object)"
             train_idx.sort()
             val_idx.sort()
             train_datasets[key] = Subset(ds_full, train_idx)
             val_datasets[key]   = Subset(ds_full, val_idx)
             print(f"  [{key}/{sensor_name}] episode-level split: "
                   f"{len(train_idx)} train / {len(val_idx)} val "
-                  f"(val=every {val_stride}th ep per object)")
+                  f"{split_label}")
         else:
             n = len(ds_full)
             train_len = int(train_frac * n)
@@ -841,7 +855,7 @@ def get_dynamic_self_datasets(dataset_name, dataset_details, data_split='train',
     return train_datasets, val_datasets, {}
 
 
-def get_temporal_pair_datasets(dataset_name, device='cpu'):
+def get_temporal_pair_datasets(dataset_name, device='cpu', objects=None):
     """Per-modality TemporalPairDataset dict for L_slow training.
 
     Same config lookup as get_dynamic_self_datasets but returns consecutive
@@ -863,6 +877,12 @@ def get_temporal_pair_datasets(dataset_name, device='cpu'):
     data_root = dataset_details.get('data_root', None)
     image_size = dataset_details.get('image_size', 224)
     sensors = dataset_details.get('sensors', {'D': 'daimon', 'E': 'eflesh', 'F': 'flexi'})
+    train_frac = float(dataset_details.get('train_frac', 0.8))
+    # Mirror get_dynamic_self_datasets's episode-level split so L_slow only
+    # walks consecutive pairs whose BOTH frames lie in train episodes — val
+    # episodes (whole groups) are dropped at pair-build time.
+    use_ep_split = bool(dataset_details.get('episode_val_split', False))
+    explicit_val_eps = dataset_details.get('val_episode_ids', None)
 
     result = {}
     for key, sensor_name in sensors.items():
@@ -874,9 +894,36 @@ def get_temporal_pair_datasets(dataset_name, device='cpu'):
             base = DynamicSelfDataset(
                 os.path.join(dr, sensor_name), sensor_name,
                 transform=transform, mean=mean, std=std,
-                device=device,
+                device=device, objects=objects,
             )
-            pair_datasets.append(TemporalPairDataset(base))
+            tp = TemporalPairDataset(base)
+            if use_ep_split:
+                groups = defaultdict(list)
+                for i, ep_full in enumerate(base.episode_per_sample):
+                    obj_id = ep_full // 100000
+                    ep_id = ep_full % 100000
+                    groups[(obj_id, ep_id)].append(i)
+                train_set = set()
+                if explicit_val_eps is not None:
+                    val_ep_set = set(int(e) for e in explicit_val_eps)
+                    for (obj_id, ep_id), idxs in groups.items():
+                        if ep_id not in val_ep_set:
+                            train_set.update(idxs)
+                else:
+                    by_obj = defaultdict(list)
+                    for gk in groups:
+                        by_obj[gk[0]].append(gk)
+                    val_stride = max(2, round(1.0 / max(1e-6, 1.0 - train_frac)))
+                    for obj_id in sorted(by_obj):
+                        for j, gk in enumerate(sorted(by_obj[obj_id])):
+                            if j % val_stride != 0:
+                                train_set.update(groups[gk])
+                n_total = len(tp.pairs)
+                tp.pairs = [(i, j) for (i, j) in tp.pairs
+                            if i in train_set and j in train_set]
+                print(f"  [temporal_pairs/{sensor_name}] train-episode filter: "
+                      f"kept {len(tp.pairs)}/{n_total} pairs")
+            pair_datasets.append(tp)
         result[key] = pair_datasets[0] if len(pair_datasets) == 1 else ConcatDataset(pair_datasets)
         print(f"[temporal_pairs] {sensor_name}: {len(result[key])} consecutive pairs")
     return result
@@ -900,7 +947,7 @@ def get_all_contrastive_datasets(dataset_name, data_split='train', device='cpu',
     elif dataset_type == 'cross_modal_tri':
         return get_cross_modal_tri_datasets(dataset_name, dataset_details, data_split, device, objects=objects)
     elif dataset_type == 'cross_modal_tri_dynamic':
-        return get_dynamic_self_datasets(dataset_name, dataset_details, data_split, device)
+        return get_dynamic_self_datasets(dataset_name, dataset_details, data_split, device, objects=objects)
     else:
         raise ValueError('Dataset type not recognized')
 

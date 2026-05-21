@@ -280,8 +280,12 @@ def train_tri_dynamic_align(paired_train_datasets, dynamic_train_datasets,
 
         with torch.no_grad():
             if epoch % 10 == 0:
+                # Periodic kept snapshot: every 50 epochs once past epoch 100,
+                # so long runs are recoverable (model.pt itself is overwritten).
+                snap = f"ep{epoch}" if (epoch >= 100 and epoch % 50 == 0) else None
                 save_model(model, dataset_name, dataset_type, model_type,
-                           dataset_details, model_details, run_name=run_name)
+                           dataset_details, model_details, run_name=run_name,
+                           tag=snap)
                 if last_targets is not None:
                     x_D, _ = last_targets['de']
                     grid = make_grid(x_D[:36], nrow=6, normalize=True)
