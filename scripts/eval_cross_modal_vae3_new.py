@@ -903,7 +903,7 @@ def main():
     with open(os.path.join(args.checkpoint_dir, 'model_details.yaml')) as f:
         model_details = yaml.safe_load(f)
     model = get_model('cross_modal_vae3', model_details).to(args.device)
-    ckpt = torch.load(os.path.join(args.checkpoint_dir, 'model.pt'),
+    ckpt = torch.load(os.path.join(args.checkpoint_dir, 'model_ep100.pt'),
                       map_location=args.device, weights_only=False)
     if isinstance(ckpt, dict) and 'state_dict' in ckpt:
         ckpt = ckpt['state_dict']

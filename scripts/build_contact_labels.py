@@ -43,10 +43,9 @@ Notes:
 
 Usage:
     # default: fixed threshold 0.1 on per-episode min-max normalized score
-    python scripts/build_contact_labels.py \\
-        --data_root /home/junsung/cross_modal_tactile/tactile_benchmark/data/latent_data_new_processed \\
-        --out_root contact_labels/dataset_sachin_new \\
-        --objects small_ball \\
+    python scripts/build_contact_labels.py \
+        --data_root /home/junsung/cross_modal_tactile/tactile_benchmark/data/latent_data_new_processed \
+        --out_root contact_labels/dataset_sachin_new \
         --visualize
 
     # tweak the threshold
@@ -218,7 +217,26 @@ def build_one_episode(data_root, pair, obj, episode,
 
     contact_a = norm_a > th_a
     contact_b = norm_b > th_b
-    contact_pair_raw = contact_a & contact_b
+
+    # Asymmetric onset/offset state machine:
+    #   OFF → ON  : both sensors must exceed threshold (AND, follow the
+    #               slower-rising sensor)
+    #   ON  → OFF : either sensor drops below threshold (OR-exit, follow
+    #               the faster-falling sensor — e.g. eflesh drops quickly
+    #               after release while flexitac decays slowly, so eflesh
+    #               triggers the exit)
+    n = len(contact_a)
+    contact_pair_raw = np.zeros(n, dtype=bool)
+    state = False
+    for t in range(n):
+        if not state:
+            if contact_a[t] and contact_b[t]:
+                state = True
+        else:
+            if (not contact_a[t]) or (not contact_b[t]):
+                state = False
+        contact_pair_raw[t] = state
+
     contact_pair = morph_close_open(
         contact_pair_raw, min_gap=smooth_min_gap, min_run=smooth_min_run,
     )
@@ -256,10 +274,26 @@ def plot_episode(d, out_path):
     ax.axhline(d['thresh_b'], ls='--', color='#ff7f0e', lw=1.0,
                label=f"th_b = {d['thresh_b']:.2f}")
     cp = d['contact_pair'].astype(bool)
-    ax.fill_between(fr, 0, 1, where=cp, color='gray', alpha=0.35,
-                    step='mid', label='contact_pair (AND)')
+
+    # Shade contact frames as frame-centered bins.
+    first_label = True
+    for s, e, v in _runs(cp):
+        if not v:
+            continue
+
+        x0 = fr[s] - 0.5
+        x1 = fr[e - 1] + 0.5
+
+        ax.axvspan(
+            x0, x1,
+            color='gray',
+            alpha=0.35,
+            label='contact_pair' if first_label else None
+        )
+    first_label = False
+
     ax.set_ylim(-0.02, 1.05)
-    ax.set_xlim(int(fr.min()), int(fr.max()))
+    ax.set_xlim(int(fr.min()) - 0.5, int(fr.max()) + 0.5)
     ax.set_xlabel('frame')
     ax.set_ylabel('normalized score')
     ax.set_title(
