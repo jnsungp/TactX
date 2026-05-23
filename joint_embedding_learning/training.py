@@ -351,12 +351,14 @@ def _tri_log_metrics(prefix, outs, info):
     return log
 
 
-def tri_train_step(args, train_loaders, model, criterion, optimizer, wandb):
+def tri_train_step(args, train_loaders, model, criterion, optimizer, wandb,
+                   scaler=None):
     loss_epoch = 0
     count = 0
     max_len = max(len(l) for l in train_loaders.values())
     last_targets = None
     last_outs = None
+    use_amp = scaler is not None
 
     for batch_idx, batches in enumerate(tqdm(_tri_zip_loaders(train_loaders), total=max_len)):
         targets = {}
@@ -365,19 +367,23 @@ def tri_train_step(args, train_loaders, model, criterion, optimizer, wandb):
             x_a = x_a.to(args.device)
             x_b = x_b.to(args.device)
             targets[pair_key] = (x_a, x_b)
-            # labels = [object_id, episode_id, frame_id] — used by CWCL,
-            # ignored by InfoNCE / uniforce.
             meta[pair_key] = tuple(t.to(args.device) for t in labels)
 
         optimizer.zero_grad()
-        outs = {p: model.forward_pair(targets[p][0], targets[p][1], p)
-                for p in ('de', 'ef', 'fd')}
-        beta = _kl_beta(args)
-        alpha = _infonce_alpha(args)
-        info = criterion(outs, targets, beta=beta, alpha=alpha, meta=meta)
-        loss = info['total']
-        loss.backward()
-        optimizer.step()
+        with torch.amp.autocast('cuda', enabled=use_amp):
+            outs = {p: model.forward_pair(targets[p][0], targets[p][1], p)
+                    for p in ('de', 'ef', 'fd')}
+            beta = _kl_beta(args)
+            alpha = _infonce_alpha(args)
+            info = criterion(outs, targets, beta=beta, alpha=alpha, meta=meta)
+            loss = info['total']
+        if use_amp:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
 
         with torch.no_grad():
             log_dict = {
@@ -416,7 +422,8 @@ def tri_train_step(args, train_loaders, model, criterion, optimizer, wandb):
     return loss_epoch, last_targets, last_outs
 
 
-def tri_validation_step(args, val_loaders, model, criterion, wandb, val_name='Val'):
+def tri_validation_step(args, val_loaders, model, criterion, wandb,
+                        val_name='Val', use_amp=False):
     if not val_loaders:
         return None, None, None
 
@@ -437,12 +444,13 @@ def tri_validation_step(args, val_loaders, model, criterion, wandb, val_name='Va
                 targets[pair_key] = (x_a, x_b)
                 meta[pair_key] = tuple(t.to(args.device) for t in labels)
 
-            outs = {p: model.forward_pair(targets[p][0], targets[p][1], p)
-                    for p in ('de', 'ef', 'fd')}
-            beta = _kl_beta(args)
-            alpha = _infonce_alpha(args)
-            info = criterion(outs, targets, beta=beta, alpha=alpha, meta=meta)
-            loss = info['total']
+            with torch.amp.autocast('cuda', enabled=use_amp):
+                outs = {p: model.forward_pair(targets[p][0], targets[p][1], p)
+                        for p in ('de', 'ef', 'fd')}
+                beta = _kl_beta(args)
+                alpha = _infonce_alpha(args)
+                info = criterion(outs, targets, beta=beta, alpha=alpha, meta=meta)
+                loss = info['total']
 
             log_dict = {
                 f"Loss_{val_name}/Model_Loss_batch": loss.item(),
@@ -571,13 +579,19 @@ def train_tri(train_datasets, validation_datasets, dataset_name, dataset_details
     optimizer, scheduler, _ = load_optimizer(args, model)
     criterion = get_loss(args, model_name)
 
+    use_amp = bool(getattr(args, 'amp', False)) and args.device.startswith('cuda')
+    scaler = torch.amp.GradScaler('cuda') if use_amp else None
+    if use_amp:
+        print("Mixed-precision training (AMP) enabled")
+
     args.global_step = 0
     args.current_epoch = 0
 
     for epoch in tqdm(range(args.start_epoch, args.epochs), desc="Epochs"):
         lr = optimizer.param_groups[0]["lr"]
         loss_epoch, last_targets, _last_outs = tri_train_step(
-            args, train_loaders, model, criterion, optimizer, wandb
+            args, train_loaders, model, criterion, optimizer, wandb,
+            scaler=scaler,
         )
         wandb.log({"Loss_train/Model_Loss": loss_epoch,
                    "Misc/learning_rate": lr,
@@ -601,7 +615,8 @@ def train_tri(train_datasets, validation_datasets, dataset_name, dataset_details
 
             for key, val_loaders in val_loaders_array.items():
                 val_loss_epoch, _, _ = tri_validation_step(
-                    args, val_loaders, model, criterion, wandb, val_name=key
+                    args, val_loaders, model, criterion, wandb, val_name=key,
+                    use_amp=use_amp,
                 )
                 if val_loss_epoch is not None:
                     wandb.log({f"Loss_{key}/Model_Loss": val_loss_epoch,

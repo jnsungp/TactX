@@ -55,8 +55,8 @@ class CMTJESimCLR(Dataset):
         # # Check if the CSV file already has content
         # file_exists = os.path.isfile(csv_file) and os.path.getsize(csv_file) > 0
 
-        bubbles_data = torch.load(self.bubbles_files[idx], map_location=self.device, weights_only=False)
-        gelslim_data = torch.load(self.gelslim_files[idx], map_location=self.device, weights_only=False)
+        bubbles_data = torch.load(self.bubbles_files[idx], map_location='cpu', weights_only=False)
+        gelslim_data = torch.load(self.gelslim_files[idx], map_location='cpu', weights_only=False)
         # print('Index on dataset:', idx)
 
         # with open(csv_file, 'a', newline='') as file:
@@ -75,7 +75,7 @@ class CMTJESimCLR(Dataset):
         bubbles_img, gelslim_diff, _, _ = get_images_from_full_data(bubbles_data, gelslim_data, bubbles_transform = self.bubblest_transforms, gelslim_transform = self.gelslim_transform, side = self.side, padding = self.padding, difference = self.difference)
         bubbles_img = bubbles_img.repeat(3, 1, 1)
         # import pdb; pdb.set_trace()
-        return [bubbles_img, gelslim_diff], [torch.tensor(self.tool_per_sample[idx]).to(self.device), gelslim_data['theta'].to(self.device), gelslim_data['x'].to(self.device), gelslim_data['y'].to(self.device)] 
+        return [bubbles_img, gelslim_diff], [torch.tensor(self.tool_per_sample[idx]), gelslim_data['theta'], gelslim_data['x'], gelslim_data['y']] 
     
 def get_tactile_datasets(dataset_name, dataset_details, data_split = 'train', device = 'cpu'):
     root_dir_bubbles = dataset_details['bubbles_path']
@@ -226,8 +226,8 @@ class CrossModalDataset(Dataset):
         return len(self.daimon_files)
 
     def __getitem__(self, idx):
-        daimon_data = torch.load(self.daimon_files[idx], map_location=self.device, weights_only=False)
-        eflesh_data = torch.load(self.eflesh_files[idx], map_location=self.device, weights_only=False)
+        daimon_data = torch.load(self.daimon_files[idx], map_location='cpu', weights_only=False)
+        eflesh_data = torch.load(self.eflesh_files[idx], map_location='cpu', weights_only=False)
 
         # --- Daimon image processing ---
         daimon_img = daimon_data['image'].float()  # (C, H, W) or (H, W)
@@ -244,9 +244,9 @@ class CrossModalDataset(Dataset):
         if self.eflesh_mean is not None and self.eflesh_std is not None:
             eflesh_vec = (eflesh_vec - self.eflesh_mean.to(eflesh_vec.device)) / (self.eflesh_std.to(eflesh_vec.device) + 1e-8)
 
-        tool_id = torch.tensor(self.tool_per_sample[idx], dtype=torch.long).to(self.device)
-        episode_id = torch.tensor(self.episode_per_sample[idx], dtype=torch.long).to(self.device)
-        frame_id = torch.tensor(self.frame_per_sample[idx], dtype=torch.long).to(self.device)
+        tool_id = torch.tensor(self.tool_per_sample[idx], dtype=torch.long)
+        episode_id = torch.tensor(self.episode_per_sample[idx], dtype=torch.long)
+        frame_id = torch.tensor(self.frame_per_sample[idx], dtype=torch.long)
 
         return [daimon_img, eflesh_vec], [tool_id, episode_id, frame_id]
 
@@ -450,7 +450,7 @@ class CrossModalPairDataset(Dataset):
         return (x - m) / (s + 1e-8)
 
     def _load_one(self, path, transforms_, mean, std):
-        x = torch.load(path, map_location=self.device, weights_only=False)
+        x = torch.load(path, map_location='cpu', weights_only=False)
         if isinstance(x, dict):
             # backward-compat: also accept dict-style files if encountered.
             if 'image' in x: x = x['image']
@@ -470,9 +470,9 @@ class CrossModalPairDataset(Dataset):
                              self.mean_a, self.std_a)
         x_b = self._load_one(self.files_b[idx], self.transforms_b,
                              self.mean_b, self.std_b)
-        object_id = torch.tensor(self.object_per_sample[idx], dtype=torch.long).to(self.device)
-        episode_id = torch.tensor(self.episode_per_sample[idx], dtype=torch.long).to(self.device)
-        frame_id = torch.tensor(self.frame_per_sample[idx], dtype=torch.long).to(self.device)
+        object_id = torch.tensor(self.object_per_sample[idx], dtype=torch.long)
+        episode_id = torch.tensor(self.episode_per_sample[idx], dtype=torch.long)
+        frame_id = torch.tensor(self.frame_per_sample[idx], dtype=torch.long)
         # label triple: [object_id, episode_id, frame_id]. Consumers that only
         # used [episode, frame] ignore labels entirely, so this is additive.
         return [x_a, x_b], [object_id, episode_id, frame_id]
@@ -627,7 +627,7 @@ class DynamicSelfDataset(Dataset):
 
     def __getitem__(self, idx):
         path = self.files[idx]
-        x = torch.load(path, map_location=self.device, weights_only=False)
+        x = torch.load(path, map_location='cpu', weights_only=False)
         if isinstance(x, dict):
             if 'image' in x: x = x['image']
             elif 'magnetic' in x: x = x['magnetic']
@@ -639,8 +639,8 @@ class DynamicSelfDataset(Dataset):
         x = self._apply_zscore(x, self.mean, self.std)
         if self.transform is not None:
             x = self.transform(x)
-        episode_id = torch.tensor(self.episode_per_sample[idx], dtype=torch.long).to(self.device)
-        frame_id = torch.tensor(self.frame_per_sample[idx], dtype=torch.long).to(self.device)
+        episode_id = torch.tensor(self.episode_per_sample[idx], dtype=torch.long)
+        frame_id = torch.tensor(self.frame_per_sample[idx], dtype=torch.long)
         is_nocontact = torch.tensor(self.is_nocontact_per_sample[idx], dtype=torch.bool)
         return x, [episode_id, frame_id, is_nocontact]
 

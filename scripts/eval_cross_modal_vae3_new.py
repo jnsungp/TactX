@@ -441,6 +441,33 @@ def contact_probe(mu_pairs_tr, mu_pairs_v, meta_tr, meta_v,
     }
 
 
+def filter_pairs_by_contact(mu_pairs, meta, object_names_per_pair,
+                            label_root, target=1):
+    """Return mu_pairs filtered to frames whose contact_pair label == target.
+
+    Both μ_a and μ_b share the same contact_pair label (AND), so the same
+    frame mask applies to both sides — paired structure is preserved, which
+    is what plot_tsne_paired needs to draw pair links."""
+    out = {}
+    sizes = {}
+    for pk in _PAIRS:
+        labels = _load_pair_contact_labels(
+            label_root, pk, object_names_per_pair[pk]
+        )
+        if not labels:
+            continue
+        ma, mb = mu_pairs[pk]
+        y = _gather_contact_y(meta[pk], labels, default=-1)
+        keep = y == int(target)
+        n_keep = int(keep.sum())
+        sizes[pk] = n_keep
+        if n_keep == 0:
+            continue
+        keep_t = torch.from_numpy(keep)
+        out[pk] = (ma[keep_t], mb[keep_t])
+    return out, sizes
+
+
 def topk_retrieval(query, gallery, ks=(1, 5, 10)):
     q = F.normalize(query, dim=1)
     g = F.normalize(gallery, dim=1)
@@ -521,8 +548,13 @@ def plot_cosine_dist(pairs_data, out_path):
 
 def plot_tsne_paired(mu_pairs, split_name, out_path, n_max=2000, perplexity=None):
     blocks, info = [], []
+    pairs_present = []
     for pk in _PAIRS:
+        if pk not in mu_pairs:
+            continue
         ma, mb = mu_pairs[pk]
+        if len(ma) == 0 or len(mb) == 0:
+            continue
         sa, sb = _PAIR_SENSORS[pk]
         a_arr = F.normalize(ma, dim=1).numpy()
         b_arr = F.normalize(mb, dim=1).numpy()
@@ -533,6 +565,11 @@ def plot_tsne_paired(mu_pairs, split_name, out_path, n_max=2000, perplexity=None
         info.append((sb, pk, len(b_arr)))
         blocks.append(a_arr)
         blocks.append(b_arr)
+        pairs_present.append(pk)
+
+    if not blocks:
+        print(f"  [{split_name}] no frames to plot — skipped {out_path}")
+        return
 
     combined = np.concatenate(blocks, axis=0)
     perp = _auto_perplexity(len(combined), perplexity)
@@ -559,14 +596,17 @@ def plot_tsne_paired(mu_pairs, split_name, out_path, n_max=2000, perplexity=None
     for (sensor, pk, n), pts in zip(info, block_coords):
         ax.scatter(pts[:, 0], pts[:, 1], c=SENSOR_COLOR[sensor], alpha=0.3, s=10)
     rng = np.random.RandomState(0)
-    for i, pk in enumerate(_PAIRS):
+    for i, pk in enumerate(pairs_present):
         pa, pb = block_coords[2 * i], block_coords[2 * i + 1]
         n_links = min(len(pa), len(pb), 100000000)
+        if n_links == 0:
+            continue
         idx = rng.choice(min(len(pa), len(pb)), n_links, replace=False)
         for k in idx:
             ax.plot([pa[k, 0], pb[k, 0]], [pa[k, 1], pb[k, 1]],
                     c=LINK_COLOR[pk], alpha=0.15, lw=0.5)
-    handles = [Line2D([], [], color=c, lw=1.5, label=f'{pk} link') for pk, c in LINK_COLOR.items()]
+    handles = [Line2D([], [], color=c, lw=1.5, label=f'{pk} link')
+               for pk, c in LINK_COLOR.items() if pk in pairs_present]
     ax.legend(handles=handles, fontsize=10)
     ax.set_title(f't-SNE paired [{split_name}] — pair links')
     ax.set_xticks([]); ax.set_yticks([])
@@ -1091,6 +1131,24 @@ def main():
                      n_max=args.max_tsne_points, perplexity=args.tsne_perplexity)
     plot_tsne_paired(mu_pairs_v, 'val', os.path.join(out_dir, 'tsne_static_val.png'),
                      n_max=args.max_tsne_points, perplexity=args.tsne_perplexity)
+
+    # ── t-SNE: contact / non-contact split (val) ──
+    if args.contact_label_root:
+        print('\n=== t-SNE plots (val, split by contact label) ===')
+        for target, name in [(1, 'contact'), (0, 'noncontact')]:
+            filt, sizes = filter_pairs_by_contact(
+                mu_pairs_v, meta_v, object_names_per_pair,
+                args.contact_label_root, target=target,
+            )
+            if not filt:
+                print(f"  [val_{name}] no frames or no labels — skipped")
+                continue
+            print(f"  [val_{name}] sizes per pair: {sizes}")
+            plot_tsne_paired(
+                filt, f'val_{name}',
+                os.path.join(out_dir, f'tsne_static_val_{name}.png'),
+                n_max=args.max_tsne_points, perplexity=args.tsne_perplexity,
+            )
 
     # ── Reconstruction visualizations ──
     print('\n=== Reconstruction visualizations ===')

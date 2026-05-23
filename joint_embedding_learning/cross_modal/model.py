@@ -229,6 +229,148 @@ class FlexiTacEncoder(nn.Module):
         return self.fc(h)
 
 
+class _GnReluBlock(nn.Module):
+    """Pre-activation residual block (GroupNorm + GELU + 3x3 conv x2 + skip).
+
+    Used by FlexiTacEncoderResidual / FlexiTacDecoderResidual. GroupNorm is
+    chosen over BatchNorm because tactile training batches can be small and
+    are sometimes batched per-pair (chunked sampler), so per-batch statistics
+    are unreliable. Pre-activation (norm→act→conv) gives cleaner gradient
+    flow than the post-activation residual variant.
+    """
+
+    def __init__(self, in_c, out_c, stride=1, groups=8):
+        super().__init__()
+        g_in = min(groups, in_c)
+        g_out = min(groups, out_c)
+        self.norm1 = nn.GroupNorm(g_in, in_c)
+        self.act1 = nn.GELU()
+        self.conv1 = nn.Conv2d(in_c, out_c, kernel_size=3, stride=stride,
+                               padding=1, bias=False)
+        self.norm2 = nn.GroupNorm(g_out, out_c)
+        self.act2 = nn.GELU()
+        self.conv2 = nn.Conv2d(out_c, out_c, kernel_size=3, stride=1,
+                               padding=1, bias=False)
+        if stride != 1 or in_c != out_c:
+            self.skip = nn.Conv2d(in_c, out_c, kernel_size=1, stride=stride,
+                                  bias=False)
+        else:
+            self.skip = nn.Identity()
+
+    def forward(self, x):
+        y = self.act1(self.norm1(x))
+        y = self.conv1(y)
+        y = self.act2(self.norm2(y))
+        y = self.conv2(y)
+        return y + self.skip(x)
+
+
+class FlexiTacEncoderResidual(nn.Module):
+    """
+    Deeper residual CNN encoder for FlexiTac (12 x 16 grid).
+
+    ResNet's 7x7 stride-2 stem + 3x3 maxpool would collapse a 12x16 grid to
+    nothing, so we use a 3x3 stride-1 stem and a stack of pre-activation
+    residual blocks (GroupNorm + GELU) with two stride-2 downsamples. Roughly
+    one third more parameters than the small_cnn FlexiTacEncoder but much more
+    representational capacity per parameter via residual depth.
+
+    Input layout:
+        x: (B, 12, 16) raw, OR (B, 1, 12, 16). Normalized to (B, 1, 12, 16).
+
+    Architecture (default block_channels=[64, 128, 256], blocks_per_stage=[2, 2, 2]):
+        stem:    Conv(1 → 64, k3 s1 p1)                          (B, 64, 12, 16)
+        stage 1: 2x ResBlock(64 → 64)                            (B, 64, 12, 16)
+        stage 2: ResBlock(64 → 128, s=2) + ResBlock(128 → 128)   (B, 128, 6, 8)
+        stage 3: ResBlock(128 → 256, s=2) + ResBlock(256 → 256)  (B, 256, 3, 4)
+        head:    GN → GELU → AdaptiveAvgPool(1) → Linear(256 → output_dim)
+    """
+
+    def __init__(self, in_h=12, in_w=16, block_channels=(64, 128, 256),
+                 blocks_per_stage=(2, 2, 2), output_dim=512, groups=8):
+        super().__init__()
+        assert len(block_channels) == len(blocks_per_stage), \
+            "block_channels and blocks_per_stage must have same length"
+        c0 = block_channels[0]
+        self.stem = nn.Conv2d(1, c0, kernel_size=3, stride=1, padding=1, bias=False)
+
+        stages = []
+        in_c = c0
+        for stage_idx, (c_out, n_blocks) in enumerate(
+                zip(block_channels, blocks_per_stage)):
+            for b in range(n_blocks):
+                stride = 2 if (stage_idx > 0 and b == 0) else 1
+                stages.append(_GnReluBlock(in_c, c_out, stride=stride, groups=groups))
+                in_c = c_out
+        self.body = nn.Sequential(*stages)
+
+        self.norm = nn.GroupNorm(min(groups, in_c), in_c)
+        self.act = nn.GELU()
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Linear(in_c, output_dim)
+
+    def forward(self, x):
+        if x.dim() == 3:
+            x = x.unsqueeze(1)
+        h = self.stem(x)
+        h = self.body(h)
+        h = self.act(self.norm(h))
+        h = self.pool(h).flatten(1)
+        return self.fc(h)
+
+
+class FlexiTacDecoderResidual(nn.Module):
+    """
+    Deeper residual decoder, mirror of FlexiTacEncoderResidual.
+
+    Architecture (default block_channels=[256, 128, 64], blocks_per_stage=[2, 2, 2]):
+        Linear(z → 256 * 3 * 4) → reshape (B, 256, 3, 4)
+        stage 1: 2x ResBlock(256 → 256)                          (B, 256, 3, 4)
+        stage 2: ConvT(256 → 128, k4 s2 p1) + 2x ResBlock(128)   (B, 128, 6, 8)
+        stage 3: ConvT(128 → 64,  k4 s2 p1) + 2x ResBlock(64)    (B, 64, 12, 16)
+        head:    GN → GELU → Conv(64 → out_channels, k3 s1 p1)   (B, out, 12, 16)
+    """
+
+    def __init__(self, in_dim, block_channels=(256, 128, 64),
+                 blocks_per_stage=(2, 2, 2), out_h=12, out_w=16,
+                 out_channels=1, groups=8):
+        super().__init__()
+        assert len(block_channels) == len(blocks_per_stage), \
+            "block_channels and blocks_per_stage must have same length"
+        n_up = len(block_channels) - 1
+        assert out_h % (2 ** n_up) == 0 and out_w % (2 ** n_up) == 0, (
+            f"out_h={out_h}, out_w={out_w} must be divisible by 2**{n_up}"
+        )
+        self.start_h = out_h // (2 ** n_up)
+        self.start_w = out_w // (2 ** n_up)
+        self.start_c = block_channels[0]
+        self.fc = nn.Linear(in_dim,
+                            block_channels[0] * self.start_h * self.start_w)
+
+        layers = []
+        for stage_idx, (c_curr, n_blocks) in enumerate(
+                zip(block_channels, blocks_per_stage)):
+            if stage_idx > 0:
+                c_prev = block_channels[stage_idx - 1]
+                layers.append(nn.GroupNorm(min(groups, c_prev), c_prev))
+                layers.append(nn.GELU())
+                layers.append(nn.ConvTranspose2d(c_prev, c_curr, kernel_size=4,
+                                                 stride=2, padding=1, bias=False))
+            for _ in range(n_blocks):
+                layers.append(_GnReluBlock(c_curr, c_curr, stride=1, groups=groups))
+        c_last = block_channels[-1]
+        layers.append(nn.GroupNorm(min(groups, c_last), c_last))
+        layers.append(nn.GELU())
+        layers.append(nn.Conv2d(c_last, out_channels, kernel_size=3,
+                                stride=1, padding=1))
+        self.body = nn.Sequential(*layers)
+
+    def forward(self, z):
+        B = z.shape[0]
+        x = self.fc(z).view(B, self.start_c, self.start_h, self.start_w)
+        return self.body(x)
+
+
 class FlexiTacDecoder(nn.Module):
     """
     Small ConvTranspose2d decoder reconstructing a FlexiTac (12 x 16) grid
@@ -444,7 +586,15 @@ class CrossModalVAE3(nn.Module):
                  magnetic_out_dim=15,
                  flexitac_in_h=12, flexitac_in_w=16,
                  flexitac_decoder_channels=(64, 32),
-                 flexitac_out_channels=1):
+                 flexitac_out_channels=1,
+                 flexitac_decoder=None):
+        """
+        flexitac_decoder: optional pre-built decoder module (e.g.
+            FlexiTacDecoderResidual). If None, the legacy small ConvTranspose
+            FlexiTacDecoder is built from `flexitac_decoder_channels` etc.
+            Pre-existing checkpoints stay loadable: their saved state_dict
+            still matches the default-constructed FlexiTacDecoder.
+        """
         super().__init__()
         self.n_features = n_features
         self.projection_dim = projection_dim
@@ -483,13 +633,23 @@ class CrossModalVAE3(nn.Module):
             hidden_dims=tuple(magnetic_decoder_hidden),
             out_dim=magnetic_out_dim,
         )
-        self.dec_F = FlexiTacDecoder(
-            projection_dim,
-            channels=tuple(flexitac_decoder_channels),
-            out_h=flexitac_in_h,
-            out_w=flexitac_in_w,
-            out_channels=flexitac_out_channels,
-        )
+        if flexitac_decoder is not None:
+            # External decoder injected (e.g. FlexiTacDecoderResidual built in
+            # models_setup.py based on flexitac_arch='residual'). The
+            # flexitac_decoder_channels argument is ignored in this branch —
+            # the injected module owns its own architecture knobs.
+            self.dec_F = flexitac_decoder
+        else:
+            # === Legacy small ConvTranspose FlexiTacDecoder (default) ===
+            # Kept as the default to preserve state_dict compatibility with
+            # all existing cross_modal_vae3 checkpoints. Do not remove.
+            self.dec_F = FlexiTacDecoder(
+                projection_dim,
+                channels=tuple(flexitac_decoder_channels),
+                out_h=flexitac_in_h,
+                out_w=flexitac_in_w,
+                out_channels=flexitac_out_channels,
+            )
 
     @staticmethod
     def reparameterize(mu, logvar, training=True):

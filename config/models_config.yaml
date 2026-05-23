@@ -119,9 +119,27 @@ cross_modal_vae3:
   magnetic_input_dim: 15
   magnetic_hidden_dims: [64, 128, 256]
 
-  # FlexiTac small CNN encoder/decoder
+  # FlexiTac encoder/decoder.
+  #
+  # flexitac_arch:
+  #   'small_cnn' (default, omit key for legacy behavior):
+  #       2-conv FlexiTacEncoder + 2-convT FlexiTacDecoder. Uses
+  #       flexitac_encoder_channels / flexitac_pool_* / flexitac_decoder_channels.
+  #       Backward-compatible with all existing cross_modal_vae3 checkpoints.
+  #   'residual':
+  #       Deeper residual CNN (GN+GELU, 3 stages, 2 downsamples).
+  #       For NEW runs only — state_dict differs from small_cnn so old
+  #       checkpoints will fail to load. Useful when FlexiTac recon / probe
+  #       lag the other modalities (a small_cnn capacity bottleneck).
+  #       Tweak via:
+  #           flexitac_encoder_block_channels: [64, 128, 256]
+  #           flexitac_encoder_blocks_per_stage: [2, 2, 2]
+  #           flexitac_decoder_block_channels: [256, 128, 64]
+  #           flexitac_decoder_blocks_per_stage: [2, 2, 2]
+  #           flexitac_gn_groups: 8
   flexitac_in_h: 12
   flexitac_in_w: 16
+  flexitac_arch: 'residual'
   flexitac_encoder_channels: [32, 64]
   flexitac_pool_h: 6
   flexitac_pool_w: 8
@@ -146,11 +164,6 @@ cross_modal_vae3:
   infonce_warmup_start: 0
   infonce_warmup_epochs: 0
 
-  # Stage 1 (dynamic_pretrain): self-recon only on unpaired dynamic data.
-  # dynamic_beta_max = 0 disables KL during Stage 1 (recon-only).
-  dynamic_epochs: 50
-  dynamic_beta_max: 0.1
-  dynamic_kl_warmup_epochs: 10
 
   # Daimon decoder
   image_out_channels: 3

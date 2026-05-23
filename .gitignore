@@ -16,3 +16,7 @@ eval_results/
 latent_data_processed_object/
 latent_data_processed_static/
 latent_data_processed_dynamic/
+
+# Generated contact labels / plots
+contact_labels/
+config/state/
