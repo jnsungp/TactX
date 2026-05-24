@@ -1,1 +1,0 @@
-from joint_embedding_learning.cross_modal.model import CrossModalCLR, MagneticEncoder

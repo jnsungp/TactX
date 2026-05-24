@@ -1,3 +1,30 @@
+# =============================================================================
+# Conda environment for the cross_modal_tactile (CMT) project.
+#
+# HOW TO CREATE AND ACTIVATE THE `cmt` ENVIRONMENT
+# -----------------------------------------------------------------------------
+#   1. Create the environment from this file (run once, from the repo root):
+#          conda env create -f conda_environment.yaml
+#
+#   2. Activate it (run in every new shell before training/eval):
+#          conda activate cmt
+#
+#      If `conda activate` fails in a fresh shell, initialize conda once:
+#          conda init bash      # then close and reopen the terminal
+#
+#   3. Verify the install:
+#          python -c "import torch, simclr; print(torch.__version__)"
+#
+# MAINTENANCE
+# -----------------------------------------------------------------------------
+#   - Apply changes after editing this file:
+#          conda env update -f conda_environment.yaml --prune
+#   - Delete the environment:
+#          conda env remove -n cmt
+#   - Deactivate (back to base):
+#          conda deactivate
+# =============================================================================
+
 name: cmt
 channels:
   - pytorch
@@ -14,37 +41,36 @@ dependencies:
   - pytorch::torchvision=0.20.1
   - pytorch::pytorch-cuda=12.4
 
-  # 핵심 과학 라이브러리
+  # Core scientific libraries
   - numpy=1.26.4
   - scipy=1.10.1
-  - scikit-learn          # t-SNE (analysis_tools.py)
-  - matplotlib
+  - scikit-learn          # eval: t-SNE + logistic/ridge probes (eval_cross_modal_vae3_new.py)
+  - matplotlib            # plots in eval / build_contact_labels
 
-  # 이미지 처리
+  # Image processing
   - pillow
 
-  # 설정 및 유틸리티
-  - pyyaml                # yaml 파일 로드 (datasets_config, models_config)
-  - omegaconf=2.3.0       # T3 모델 설정 (models_setup.py)
-  - tqdm                  # 학습 진행 표시
+  # Config & utilities
+  - pyyaml                # load yaml configs (datasets_config*, models_config)
+  - tqdm                  # training/eval progress bars
 
-  # 실험 추적
-  - conda-forge::wandb    # 학습 로깅 (train_model.py)
+  # Experiment tracking
+  - conda-forge::wandb    # training logging (train_*_sachin.py)
 
-  # Jupyter 환경
+  # Jupyter environment (optional, for notebooks/analysis)
   - jupyter
   - jupyterlab
   - ipython
   - ipykernel
 
-  # pip으로만 설치 가능한 패키지
+  # pip-only packages
   - pip
   - pip:
-    # SimCLR 구현체 (models_setup.py, utils.py, evaluation.py에서 import)
-    # - SimCLR 모델 (encoder + projection head)
-    # - NT_Xent loss
-    # - get_resnet, LogisticRegression 등
+    # External SimCLR implementation (NOT the local code) — provides
+    # get_resnet (Daimon ResNet backbone) and NT_Xent, imported by
+    # models_setup.py, utils.py and data/datasets.py. Required.
     - git+https://github.com/Spijkervet/SimCLR.git
 
-    # CTTP 프로젝트 자체 패키지 설치
+    # Editable install of this repo so `import joint_embedding_learning` works.
+    # Adjust the path if you cloned the repo elsewhere.
     - -e /home/junsung/cross_modal_tactile

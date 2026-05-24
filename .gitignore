@@ -11,12 +11,16 @@ t3/
 visualizations/
 dai_dai_small_ball/
 
+dump/
+latent_data/
 eval_results/
 eval_results/
 latent_data_processed_object/
 latent_data_processed_static/
 latent_data_processed_dynamic/
+processed_data/
 
 # Generated contact labels / plots
 contact_labels/
 config/state/
+checkpoints/latent_data_processed_dynamic_paired/

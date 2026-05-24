@@ -7,11 +7,10 @@ import argparse
 from tqdm import tqdm
 from torchvision.utils import make_grid
 from joint_embedding_learning.data.datasets import get_all_contrastive_datasets, EpisodeChunkBatchSampler
-from joint_embedding_learning.utils.utils import load_optimizer, save_model, get_loss
+from joint_embedding_learning.utils.utils import load_optimizer, save_model, get_loss, adjust_learning_rate
 from joint_embedding_learning.utils.losses import loss_vector_embedding, cwcl_weight_stats
 from joint_embedding_learning.utils.models_setup import get_model
 
-from joint_embedding_learning.barlow_twins.barlow import adjust_learning_rate
 
 
 def compute_embedding_metrics(z_i, z_j):
