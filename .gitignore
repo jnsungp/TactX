@@ -24,3 +24,18 @@ processed_data/
 contact_labels/
 config/state/
 checkpoints/latent_data_processed_dynamic_paired/
+
+# CoRL paper/export files
+_CoRL_2026__Cross_sensor_policy_transfer/
+_CoRL_2026__Cross_sensor_policy_transfer.zip
+
+# Local paper/reference files
+related_work_paper/
+vis_latent/
+
+# Local threshold/stat files
+contact_thresholds/
+per_object_stats_dataset*.yaml
+
+# Local LaTeX template
+paper-template-latex/

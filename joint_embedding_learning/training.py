@@ -8,8 +8,37 @@ from tqdm import tqdm
 from torchvision.utils import make_grid
 from joint_embedding_learning.data.datasets import get_all_contrastive_datasets, EpisodeChunkBatchSampler
 from joint_embedding_learning.utils.utils import load_optimizer, save_model, get_loss, adjust_learning_rate
-from joint_embedding_learning.utils.losses import loss_vector_embedding, cwcl_weight_stats
+from joint_embedding_learning.utils.losses import loss_vector_embedding, cwcl_weight_stats, ContactLabelLookup
 from joint_embedding_learning.utils.models_setup import get_model
+
+
+def _loader_kwargs(args):
+    """DataLoader perf kwargs driven by args.num_workers (default 0).
+
+    With num_workers=0 (the default) this returns {} so loaders behave exactly
+    as before. With num_workers>0 it parallelizes the per-item torch.load disk
+    reads and pins host memory for faster H2D copies. Datasets return CPU
+    tensors (the train loop moves batches to device), so worker processes are
+    safe — no CUDA tensors cross the fork boundary.
+    """
+    nw = int(getattr(args, 'num_workers', 0))
+    if nw <= 0:
+        return {}
+    return {
+        'num_workers': nw,
+        'pin_memory': True,
+        'persistent_workers': True,
+        'prefetch_factor': int(getattr(args, 'prefetch_factor', 4)),
+    }
+
+
+def _base_object_names(ds):
+    """Peel Subset/random_split wrappers to the base dataset and return its
+    .object_names (index->name list used for the object_id in meta)."""
+    base = ds
+    while hasattr(base, 'dataset'):
+        base = base.dataset
+    return list(getattr(base, 'object_names', []))
 
 
 
@@ -398,7 +427,9 @@ def tri_train_step(args, train_loaders, model, criterion, optimizer, wandb,
                 log_dict[f"Loss_train/infonce/{p}"] = info[f"infonce_{p}"].item()
                 log_dict[f"Loss_train/recon/{p}"] = info[f"recon_{p}"].item()
             for k in info:
-                if k.startswith("kl_") or k.startswith("cwcl_"):
+                if (k.startswith("kl_") or k.startswith("cwcl_")
+                        or k.startswith("debiased_") or k.startswith("neighbor_")
+                        or k.startswith("zero_supcon_")):
                     log_dict[f"Loss_train/{k}"] = info[k].item() if torch.is_tensor(info[k]) else float(info[k])
 
             log_dict.update(_tri_log_metrics("Metric_train", outs, info))
@@ -522,11 +553,12 @@ def train_tri(train_datasets, validation_datasets, dataset_name, dataset_details
     print('InfoNCE Warmup Start:', getattr(args, 'infonce_warmup_start', 0))
     print('InfoNCE Warmup Epochs:', getattr(args, 'infonce_warmup_epochs', 0))
 
-    # Episode-aware batching: required by CWCL so same-episode frames co-occur
-    # in a batch (auto-on for loss='cwcl'; opt-in elsewhere via
-    # use_episode_sampler). Otherwise standard shuffled DataLoaders.
+    # Episode-aware batching: required by CWCL / neighbor so same-episode
+    # frames co-occur in a batch (auto-on for loss in {'cwcl', 'neighbor'};
+    # opt-in elsewhere via use_episode_sampler). Otherwise standard shuffled
+    # DataLoaders.
     _use_ep_sampler = (getattr(args, 'use_episode_sampler', False)
-                       or getattr(args, 'loss', 'infonce') == 'cwcl')
+                       or getattr(args, 'loss', 'infonce') in ('cwcl', 'neighbor'))
     _chunk = int(getattr(args, 'cwcl_chunk_size', 8))
 
     def _make_loader(ds, seed):
@@ -535,9 +567,12 @@ def train_tri(train_datasets, validation_datasets, dataset_name, dataset_details
                 ds, batch_size=args.batch_size, chunk_size=_chunk,
                 drop_last=True, seed=seed,
             )
-            return torch.utils.data.DataLoader(ds, batch_sampler=sampler)
+            return torch.utils.data.DataLoader(
+                ds, batch_sampler=sampler, **_loader_kwargs(args)
+            )
         return torch.utils.data.DataLoader(
-            ds, batch_size=args.batch_size, shuffle=True, drop_last=True
+            ds, batch_size=args.batch_size, shuffle=True, drop_last=True,
+            **_loader_kwargs(args)
         )
 
     if _use_ep_sampler:
@@ -577,6 +612,36 @@ def train_tri(train_datasets, validation_datasets, dataset_name, dataset_details
 
     optimizer, scheduler, _ = load_optimizer(args, model)
     criterion = get_loss(args, model_name)
+
+    # Debiased / zero_supcon InfoNCE need per-frame contact labels. Build a
+    # (object_id, episode, frame) -> no-contact lookup once, keyed with each
+    # pair's base-dataset object_names so the keys line up with `meta`.
+    _loss_type = getattr(args, 'loss', 'infonce')
+    if _loss_type in ('debiased', 'zero_supcon'):
+        label_root = getattr(args, 'contact_label_root', None)
+        if not label_root:
+            raise ValueError(
+                f"loss='{_loss_type}' requires `contact_label_root` in "
+                f"model_details (set it via --contact_label_root)."
+            )
+        object_names_per_pair = {
+            p: _base_object_names(train_datasets[p]) for p in ('de', 'ef', 'fd')
+        }
+        contact_lookup = ContactLabelLookup(label_root, object_names_per_pair)
+        criterion.set_contact_lookup(contact_lookup)
+        print(f"[{_loss_type}] contact labels from: {label_root}")
+        print(f"[{_loss_type}] labels loaded per pair: "
+              f"{ {p: contact_lookup.n_labels[p] for p in ('de','ef','fd')} }")
+        if _loss_type == 'debiased':
+            print(f"[debiased] masks -> "
+                  f"same_episode={criterion.mask_same_episode}, "
+                  f"zero_zero={criterion.mask_zero_zero}")
+        for p in ('de', 'ef', 'fd'):
+            if contact_lookup.n_labels[p] == 0:
+                print(f"[{_loss_type}] WARNING: 0 labels found for pair '{p}' "
+                      f"under {label_root}/{p}_pair/ — check "
+                      f"--contact_label_root and that --objects match the "
+                      f"label folders.")
 
     use_amp = bool(getattr(args, 'amp', False)) and args.device.startswith('cuda')
     scaler = torch.amp.GradScaler('cuda') if use_amp else None
@@ -806,7 +871,8 @@ def train_tri_dynamic_pretrain(train_datasets, validation_datasets, dataset_name
 
     train_loaders = {
         k: torch.utils.data.DataLoader(ds, batch_size=args.batch_size,
-                                       shuffle=True, drop_last=True)
+                                       shuffle=True, drop_last=True,
+                                       **_loader_kwargs(args))
         for k, ds in train_datasets.items()
     }
     val_loaders = None
@@ -817,7 +883,8 @@ def train_tri_dynamic_pretrain(train_datasets, validation_datasets, dataset_name
             if len(ds) == 0:
                 continue
             loaders[sensor_key] = torch.utils.data.DataLoader(
-                ds, batch_size=args.batch_size, shuffle=True, drop_last=True
+                ds, batch_size=args.batch_size, shuffle=True, drop_last=True,
+                **_loader_kwargs(args)
             )
         if len(loaders) == len(_SENSOR_KEYS):
             val_loaders = loaders
@@ -917,15 +984,15 @@ def train(train_datasets, validation_datasets, dataset_name, dataset_details, mo
     
     train_loaders = []
     for dataset in train_datasets:
-        train_loaders.append(torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=True))
-    
+        train_loaders.append(torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=True, **_loader_kwargs(args)))
+
     val_loaders_array = {}
     for key, value in validation_datasets.items():
         val_loaders = []
         for dataset in value:
             if len(dataset) == 0:
                 continue
-            val_loaders.append(torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=True))
+            val_loaders.append(torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=True, **_loader_kwargs(args)))
         if val_loaders:
             val_loaders_array[key] = val_loaders
 

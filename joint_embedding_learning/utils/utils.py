@@ -3,7 +3,7 @@ import math
 import torch
 import yaml
 from simclr.modules import NT_Xent
-from joint_embedding_learning.utils.losses import CWCL, CrossModalVAELoss, CrossModalVAE3Loss, CrossModalVAE3UniforceLoss, CrossModalVAE3CWCLLoss, CrossModalCLR3Loss
+from joint_embedding_learning.utils.losses import CWCL, CrossModalVAELoss, CrossModalVAE3Loss, CrossModalVAE3UniforceLoss, CrossModalVAE3CWCLLoss, CrossModalVAE3NeighborLoss, CrossModalVAE3DebiasedLoss, CrossModalVAE3ZeroSupConLoss, CrossModalCLR3Loss
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +136,40 @@ def get_loss(args, model_name):
                 cwcl_sigma=getattr(args, 'cwcl_sigma', 5.0),
                 cwcl_same_episode_only=getattr(args, 'cwcl_same_episode_only', True),
             )
+        elif loss_type == 'neighbor':
+            # NT-Xent (matched cross-sensor) + auxiliary intra-modal cosine
+            # smoothness on ±1 same-(object, episode) frames. Default weight
+            # 0.05 — high enough to smooth, low enough to keep retrieval.
+            # Needs an episode-aware batch sampler — train_tri auto-on.
+            criterion = CrossModalVAE3NeighborLoss(
+                batch_size=args.batch_size,
+                temperature=args.temperature,
+                lambda_recon=getattr(args, 'lambda_recon', 1.0),
+                neighbor_weight=getattr(args, 'neighbor_weight', 0.05),
+                same_episode_only=getattr(args, 'neighbor_same_episode_only', True),
+            )
+        elif loss_type == 'debiased':
+            # False-negative-masked InfoNCE: different-episode-only negatives
+            # + per-sensor zero-zero mask. Needs per-frame contact labels —
+            # train_tri attaches a ContactLabelLookup after construction.
+            criterion = CrossModalVAE3DebiasedLoss(
+                batch_size=args.batch_size,
+                temperature=args.temperature,
+                lambda_recon=getattr(args, 'lambda_recon', 1.0),
+                mask_same_episode=getattr(args, 'debiased_same_episode_mask', True),
+                mask_zero_zero=getattr(args, 'debiased_zero_mask', True),
+            )
+        elif loss_type == 'zero_supcon':
+            # SupCon-style: all no-contact frames in a batch form one positive
+            # group (in addition to the matched cross-sensor pair). Forces the
+            # three encoders to share a single 'no contact' region. Needs
+            # per-frame contact labels — train_tri attaches a
+            # ContactLabelLookup after construction.
+            criterion = CrossModalVAE3ZeroSupConLoss(
+                batch_size=args.batch_size,
+                temperature=args.temperature,
+                lambda_recon=getattr(args, 'lambda_recon', 1.0),
+            )
         elif loss_type == 'infonce':
             criterion = CrossModalVAE3Loss(
                 batch_size=args.batch_size,
@@ -145,7 +179,8 @@ def get_loss(args, model_name):
         else:
             raise ValueError(
                 f"Unknown loss '{loss_type}' for cross_modal_vae3 "
-                f"(expected 'infonce', 'uniforce', 'l2', or 'cwcl')"
+                f"(expected 'infonce', 'uniforce', 'l2', 'cwcl', 'neighbor', "
+                f"'debiased', or 'zero_supcon')"
             )
     elif model_name == 'cross_modal_clr3':
         # Tri-modal plain-contrastive baseline: 3-pair NT-Xent, no recon/KL.

@@ -1,0 +1,4 @@
+{
+    "train": ["contact/flexi_flexi_board_wipe_new_contact"],
+    "val": ["contact/flexi_flexi_board_wipe_new_val_contact"]
+}

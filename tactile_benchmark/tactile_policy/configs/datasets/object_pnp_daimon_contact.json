@@ -1,0 +1,4 @@
+{
+    "train": ["contact/dai_dai_object_pnp_contact"],
+    "val": ["contact/dai_dai_object_pnp_val_contact"]
+}

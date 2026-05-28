@@ -68,12 +68,27 @@ Same three encoders, but **no decoders / no KL**. `projection_dim` 16, `batch_si
 Model config: `cross_modal_vae3` (defaults above). Loss = InfoNCE(μ) + recon + KL.
 
 ```bash
+OBJECTS="circle cylinder cylinder_vertical ellipse large_ball plane plane_horizontal small_ball square triangle"
+CUDA_VISIBLE_DEVICES=2 python scripts/train_static_sachin.py \
+    --dataset_name dataset_new \
+    --device cuda:0 \
+    --run_name infonce_recon \
+    --objects $OBJECTS \
+    --epochs 300 \
+    --num_workers 32
+
+```
+
+```bash
+OBJECTS="circle cylinder cylinder_vertical ellipse large_ball plane plane_horizontal small_ball square triangle"
 CUDA_VISIBLE_DEVICES=0 python scripts/train_static_sachin.py \
     --dataset_name dataset_new \
     --device cuda:0 \
     --run_name infonce_recon \
     --objects $OBJECTS \
-    --epochs 300
+    --epochs 100 \
+    --debiased \
+    --contact_label_root contact_labels/dataset_new
 ```
 
 ## Baseline 1 — Recon Only (no alignment)
@@ -97,13 +112,13 @@ Model config: `cross_modal_clr3` (no decoders, no KL). Loss = NT-Xent only,
 `temperature` 0.03, full weight from epoch 0.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python scripts/train_static_sachin.py \
+CUDA_VISIBLE_DEVICES=2 python scripts/train_static_sachin.py \
     --dataset_name dataset_new \
     --model_name cross_modal_clr3 \
     --device cuda:0 \
     --run_name clr_only \
     --objects $OBJECTS \
-    --epochs 300
+    --epochs 100
 ```
 
 ## Baseline 3 — Uniforce (L2 pull + Recon + KL)
@@ -135,13 +150,12 @@ OBJECTS="circle cylinder cylinder_vertical ellipse large_ball plane plane_horizo
 
 CUDA_VISIBLE_DEVICES=0 python scripts/train_slow_anchor_sachin.py \
     --dataset_name dataset_new \
-    --dynamic_dataset_name dataset_cross_modal_tri_dynamic_sachin_new \
     --device cuda:0 \
     --run_name anchor \
     --objects $OBJECTS \
     --epochs 100 \
     --lambda_slow 4 \
-    --lambda_anchor 2
+    --lambda_anchor
 ```
 
 
@@ -150,10 +164,13 @@ CUDA_VISIBLE_DEVICES=0 python scripts/train_slow_anchor_sachin.py \
 ## Evaluation
 
 ```bash
+OBJECTS="circle cylinder cylinder_vertical ellipse large_ball plane plane_horizontal small_ball square triangle"
 CUDA_VISIBLE_DEVICES=0 python scripts/eval_cross_modal_vae3_new.py \
-    --checkpoint_dir checkpoints/cross_modal_tri/cross_modal_vae3/<RUN_DIR> \
+    --checkpoint_dir checkpoints/cross_modal_tri/cross_modal_vae3/dataset_new_run_infonce_recon_db_20260524_172250 \
     --dataset_name dataset_new \
     --objects $OBJECTS \
+            --dynamic_data_root latent_data_processed_dynamic/pnp latent_data_processed_dynamic/wipe latent_data_processed_dynamic/plug\
+        --dynamic_objects pnp wipe plug\ 
     --contact_label_root contact_labels/dataset_new \
     --device cuda:0
 ```

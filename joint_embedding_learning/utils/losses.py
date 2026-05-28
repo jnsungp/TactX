@@ -1,3 +1,7 @@
+import glob
+import os
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -578,6 +582,730 @@ class CrossModalVAE3CWCLLoss(nn.Module):
                 info[f"{k}_{pair}"] = recon_per_pair[pair][k]
             for sk, sv in cwcl_stats[pair].items():
                 info[f"{sk}_{pair}"] = torch.tensor(float(sv))
+        for k, v in kl_per_sensor_pair.items():
+            info[f"kl_{k}"] = v
+        return info
+
+
+# ---------------------------------------------------------------------------
+# Auxiliary intra-modal temporal cosine smoothness
+# ---------------------------------------------------------------------------
+#
+# Plain InfoNCE (NT-Xent on matched cross-sensor pair) is kept byte-equal to
+# the baseline — so cross-modal contrast is not diluted, negative push stays
+# at full strength. On top of that, an auxiliary cosine smoothness term
+# nudges each sensor's adjacent-frame latents together:
+#
+#     L_smooth =  λ · (1 - cos(mu_a[t], mu_a[t±1]))
+#               + λ · (1 - cos(mu_b[t], mu_b[t±1]))
+#
+# restricted to same (object, episode) pairs in the current batch. Cosine
+# (not L2) matches the metric we ultimately measure (cos_pos / cos_gap) and
+# does not couple to KL-regularized latent norms.
+#
+# Same `meta = (object_ids, episode_ids, frame_ids)` plumbing as CWCL, same
+# EpisodeChunkBatchSampler requirement so ±1 frames co-occur in the batch.
+# When λ = 0 this reduces exactly to CrossModalVAE3Loss.
+
+
+def temporal_cos_smoothness_per_pair(mu_a, mu_b, obj_ids, ep_ids, fr_ids,
+                                     same_episode_only=True):
+    """Intra-modal ±1 cosine smoothness for a paired batch.
+
+    For every (i, j) in the batch with i < j, same (object, episode), and
+    |frame_i - frame_j| == 1, accumulate
+        (1 - cos(mu_a[i], mu_a[j]))  and  (1 - cos(mu_b[i], mu_b[j])).
+    Each sensor is averaged over the neighbor pairs it sees, then the two
+    sensors are averaged together. Cross-modal logits are NOT touched.
+
+    Returns (loss, n_pairs). When no ±1 neighbor pairs exist in the batch
+    the loss is a zero scalar (autograd-safe) and n_pairs == 0.
+    """
+    B = mu_a.shape[0]
+    device = mu_a.device
+
+    same_obj = obj_ids.unsqueeze(0) == obj_ids.unsqueeze(1)
+    if same_episode_only:
+        same_ep = ep_ids.unsqueeze(0) == ep_ids.unsqueeze(1)
+        mask_obj_ep = same_obj & same_ep
+    else:
+        mask_obj_ep = same_obj
+    dfr = (fr_ids.unsqueeze(0) - fr_ids.unsqueeze(1)).abs()
+    # Upper triangle only — count each (i, j) pair once.
+    triu = torch.triu(torch.ones(B, B, dtype=torch.bool, device=device), diagonal=1)
+    pair_mask = mask_obj_ep & (dfr == 1) & triu
+
+    n_pairs = int(pair_mask.sum().item())
+    if n_pairs == 0:
+        # Return a zero connected to the graph so autograd is happy.
+        zero = (mu_a.sum() * 0.0) + (mu_b.sum() * 0.0)
+        return zero, 0
+
+    pi, pj = pair_mask.nonzero(as_tuple=True)
+    a_i = F.normalize(mu_a[pi], dim=1)
+    a_j = F.normalize(mu_a[pj], dim=1)
+    b_i = F.normalize(mu_b[pi], dim=1)
+    b_j = F.normalize(mu_b[pj], dim=1)
+
+    cos_a = (a_i * a_j).sum(dim=1)        # (n_pairs,) in [-1, 1]
+    cos_b = (b_i * b_j).sum(dim=1)
+
+    loss = 0.5 * ((1.0 - cos_a).mean() + (1.0 - cos_b).mean())
+    return loss, n_pairs
+
+
+class CrossModalVAE3NeighborLoss(nn.Module):
+    """Tri-modal VAE loss for CrossModalVAE3 — 'neighbor' variant.
+
+    Baseline CrossModalVAE3Loss (matched-pair NT-Xent + 4-branch L1 recon +
+    KL) PLUS an auxiliary intra-modal cosine smoothness term:
+
+        L_smooth = (1 - cos(mu_a[t], mu_a[t±1])) + (1 - cos(mu_b[t], mu_b[t±1]))
+
+    restricted to ±1 same-(object, episode) frame pairs in the current batch
+    and averaged over those pairs. The NT-Xent term is byte-equal to the
+    baseline — cross-modal contrast is NOT diluted — so this only adds a
+    gentle temporal smoothness regularizer per sensor.
+
+        Loss = alpha * sum_p [ NT-Xent(mu_a^p, mu_b^p) + neighbor_weight * L_smooth^p ]
+             + lambda_recon * sum_p (L1 recon, 4 branches)
+             + beta        * sum_p (KL_a + KL_b)
+
+    Requires `meta = {pair: (object_ids, episode_ids, frame_ids)}` and an
+    episode-aware batch sampler so ±1 frames co-occur in the batch —
+    otherwise L_smooth degrades to 0 and this becomes CrossModalVAE3Loss
+    exactly. (train_tri auto-enables EpisodeChunkBatchSampler when
+    loss=='neighbor'.)
+    """
+
+    PAIR_NAMES = ("de", "ef", "fd")
+
+    def __init__(self, batch_size, temperature, lambda_recon=1.0,
+                 neighbor_weight=0.05, same_episode_only=True):
+        super().__init__()
+        if NT_Xent is None:
+            raise ImportError(
+                "simclr.modules.NT_Xent is required for CrossModalVAE3NeighborLoss"
+            )
+        self.nt_xent_de = NT_Xent(batch_size, temperature, 1)
+        self.nt_xent_ef = NT_Xent(batch_size, temperature, 1)
+        self.nt_xent_fd = NT_Xent(batch_size, temperature, 1)
+        self.lambda_recon = float(lambda_recon)
+        self.neighbor_weight = float(neighbor_weight)
+        self.same_episode_only = bool(same_episode_only)
+
+    def _nt_for(self, pair):
+        return {"de": self.nt_xent_de, "ef": self.nt_xent_ef,
+                "fd": self.nt_xent_fd}[pair]
+
+    @staticmethod
+    def _shape_match(recon, target):
+        if recon.shape == target.shape:
+            return recon
+        if recon.dim() == target.dim() + 1 and recon.shape[1] == 1:
+            return recon.squeeze(1)
+        if target.dim() == recon.dim() + 1 and target.shape[1] == 1:
+            return recon.unsqueeze(1)
+        return recon
+
+    def forward(self, outs, targets, beta=0.0, alpha=1.0, meta=None):
+        if meta is None:
+            raise ValueError(
+                "CrossModalVAE3NeighborLoss requires `meta` "
+                "{pair: (object_ids, episode_ids, frame_ids)}; got None."
+            )
+
+        info_per_pair = {}
+        smooth_per_pair = {}
+        smooth_n_per_pair = {}
+        recon_per_pair = {}
+        kl_per_sensor_pair = {}
+
+        L_info_total = 0.0
+        L_smooth_total = 0.0
+        L_recon_total = 0.0
+        L_kl_total = 0.0
+
+        for pair in self.PAIR_NAMES:
+            out = outs[pair]
+            x_a, x_b = targets[pair]
+            mu_a, mu_b = out["mu_a"], out["mu_b"]
+            logvar_a, logvar_b = out["logvar_a"], out["logvar_b"]
+
+            if pair not in meta:
+                raise ValueError(f"meta is missing pair '{pair}'")
+            obj_ids, ep_ids, fr_ids = meta[pair]
+
+            # 1) Plain NT-Xent on matched cross-sensor pair (baseline-equal).
+            L_info = self._nt_for(pair)(mu_a, mu_b)
+            L_info_total = L_info_total + L_info
+            info_per_pair[pair] = L_info.detach()
+
+            # 2) Auxiliary intra-modal cos smoothness on ±1 same-(obj, ep).
+            L_smooth, n_pairs = temporal_cos_smoothness_per_pair(
+                mu_a, mu_b, obj_ids, ep_ids, fr_ids,
+                same_episode_only=self.same_episode_only,
+            )
+            L_smooth_total = L_smooth_total + L_smooth
+            smooth_per_pair[pair] = L_smooth.detach()
+            smooth_n_per_pair[pair] = n_pairs
+
+            # 3) Recon (4 L1 branches).
+            r_aa = F.l1_loss(self._shape_match(out["recon_aa"], x_a), x_a)
+            r_ba = F.l1_loss(self._shape_match(out["recon_ba"], x_a), x_a)
+            r_bb = F.l1_loss(self._shape_match(out["recon_bb"], x_b), x_b)
+            r_ab = F.l1_loss(self._shape_match(out["recon_ab"], x_b), x_b)
+            L_recon_pair = r_aa + r_ba + r_bb + r_ab
+            L_recon_total = L_recon_total + L_recon_pair
+            recon_per_pair[pair] = {
+                "total": L_recon_pair.detach(),
+                "recon_aa": r_aa.detach(), "recon_ba": r_ba.detach(),
+                "recon_bb": r_bb.detach(), "recon_ab": r_ab.detach(),
+            }
+
+            kl_a = kl_divergence_standard(mu_a, logvar_a)
+            kl_b = kl_divergence_standard(mu_b, logvar_b)
+            L_kl_total = L_kl_total + kl_a + kl_b
+            kl_per_sensor_pair[f"{pair}_a"] = kl_a.detach()
+            kl_per_sensor_pair[f"{pair}_b"] = kl_b.detach()
+
+        L_align_total = L_info_total + self.neighbor_weight * L_smooth_total
+        total = alpha * L_align_total + self.lambda_recon * L_recon_total + beta * L_kl_total
+
+        info = {
+            "total": total,
+            "infonce": L_info_total.detach(),          # plain NT-Xent (cross-modal align)
+            "recon": L_recon_total.detach(),
+            "kl": L_kl_total.detach() if torch.is_tensor(L_kl_total) else torch.tensor(float(L_kl_total)),
+            "beta": torch.tensor(float(beta)),
+            "alpha_infonce": torch.tensor(float(alpha)),
+        }
+        info["neighbor_smooth_total"] = (L_smooth_total.detach() if torch.is_tensor(L_smooth_total)
+                                         else torch.tensor(float(L_smooth_total)))
+        info["neighbor_weight"] = torch.tensor(float(self.neighbor_weight))
+        for pair in self.PAIR_NAMES:
+            info[f"infonce_{pair}"] = info_per_pair[pair]
+            info[f"recon_{pair}"] = recon_per_pair[pair]["total"]
+            for k in ("recon_aa", "recon_ba", "recon_bb", "recon_ab"):
+                info[f"{k}_{pair}"] = recon_per_pair[pair][k]
+            info[f"neighbor_smooth_{pair}"] = smooth_per_pair[pair]
+            info[f"neighbor_pair_count_{pair}"] = torch.tensor(float(smooth_n_per_pair[pair]))
+        for k, v in kl_per_sensor_pair.items():
+            info[f"kl_{k}"] = v
+        return info
+
+
+# ---------------------------------------------------------------------------
+# Debiased (false-negative-masked) InfoNCE
+# ---------------------------------------------------------------------------
+#
+# Plain InfoNCE/NT-Xent treats *every* off-diagonal pair in the batch as a
+# negative. In this dataset that is wrong in two systematic ways:
+#
+#   1. Same (object, episode): every frame of one episode is the SAME physical
+#      contact point pressed to slightly different depths — the contact-max
+#      plateau is essentially one state — so two same-episode frames are NOT a
+#      real negative. We therefore only keep different-(object, episode) frames
+#      as negatives ("different-episode negative" rule).
+#
+#   2. No-contact ("zero") frames: each episode begins/ends with ~20 no-contact
+#      frames. Two zero frames are the SAME 'no contact' state regardless of
+#      which object/episode they came from, so a zero-zero pair is a false
+#      negative even across episodes. We mask zero-zero pairs out of every
+#      anchor's denominator.
+#
+# "zero" is read per sensor from the contact labels written by
+# scripts/build_contact_labels.py (contact_a for the a-modality half of the
+# batch, contact_b for the b-modality half), so the mask matches each
+# embedding's own sensor.
+#
+# This is supervised false-negative cancellation (cf. Chuang et al. 2020,
+# "Debiased Contrastive Learning"; Huynh et al. 2022, "Boosting Contrastive
+# Self-Supervised Learning with False Negative Cancellation"; Khosla et al.
+# 2020, "Supervised Contrastive Learning"): we never relabel anything as a
+# *positive* (the only positive stays the matched cross-sensor frame), we only
+# remove pairs we can prove are not genuine negatives. Removing false negatives
+# can only relax the contrastive push; it cannot collapse the space because the
+# matched-frame positive and the 4-branch reconstruction term are untouched.
+
+_PAIR_DIR = {'de': 'de_pair', 'ef': 'ef_pair', 'fd': 'fd_pair'}
+
+
+class ContactLabelLookup:
+    """Per-(pair, object_id, episode, frame) no-contact flags for the
+    debiased loss.
+
+    Loads the per-episode label files written by scripts/build_contact_labels.py
+    (``<root>/<pair_dir>/<object>/ep****.pt`` with keys ``frames``,
+    ``contact_a``, ``contact_b``) and exposes a batch lookup keyed by the SAME
+    (object_id, episode_id, frame_id) tuples the dataset emits as ``meta``.
+
+    object_id is the index into ``object_names_per_pair[pair]``, which MUST be
+    the base CrossModalPairDataset.object_names list (the dataset returns that
+    exact index from __getitem__). Building the keys with the same ordering
+    means no name translation is needed at batch time — this mirrors how
+    scripts/eval_cross_modal_vae3_new.py matches labels to μ samples.
+    """
+
+    def __init__(self, label_root, object_names_per_pair):
+        self.label_root = label_root
+        # pair -> {(obj_id, ep, fr): (zero_a, zero_b)}  (zero == no contact)
+        self._maps = {}
+        self.n_labels = {}
+        for pair, object_names in object_names_per_pair.items():
+            m = self._load_pair(label_root, pair, object_names)
+            self._maps[pair] = m
+            self.n_labels[pair] = len(m)
+
+    @staticmethod
+    def _load_pair(label_root, pair, object_names):
+        pair_dir = _PAIR_DIR[pair]
+        m = {}
+        for obj_id, obj in enumerate(object_names):
+            ep_dir = os.path.join(label_root, pair_dir, obj)
+            if not os.path.isdir(ep_dir):
+                continue
+            for f in sorted(glob.glob(os.path.join(ep_dir, 'ep*.pt'))):
+                d = torch.load(f, map_location='cpu', weights_only=False)
+                ep = int(d['episode'])
+                frames = np.asarray(d['frames'])
+                ca = np.asarray(d['contact_a']).astype(np.int64)
+                cb = np.asarray(d['contact_b']).astype(np.int64)
+                for fr, a, b in zip(frames, ca, cb):
+                    # zero == NO contact == (contact == 0)
+                    m[(obj_id, ep, int(fr))] = (a == 0, b == 0)
+        return m
+
+    @torch.no_grad()
+    def zero_flags(self, pair, object_ids, episode_ids, frame_ids):
+        """Return (zero_a, zero_b, n_found).
+
+        zero_a / zero_b are bool tensors (B,) on the meta device. A frame whose
+        label is missing defaults to False (treated as 'has contact' so it stays
+        eligible as a negative — we never silently drop a negative we cannot
+        verify is a false one)."""
+        m = self._maps.get(pair, {})
+        obj = object_ids.detach().cpu().numpy()
+        ep = episode_ids.detach().cpu().numpy()
+        fr = frame_ids.detach().cpu().numpy()
+        B = obj.shape[0]
+        za = np.zeros(B, dtype=bool)
+        zb = np.zeros(B, dtype=bool)
+        n_found = 0
+        for i in range(B):
+            v = m.get((int(obj[i]), int(ep[i]), int(fr[i])))
+            if v is not None:
+                za[i], zb[i] = v
+                n_found += 1
+        dev = object_ids.device
+        return (torch.as_tensor(za, device=dev),
+                torch.as_tensor(zb, device=dev),
+                n_found)
+
+
+def debiased_infonce_pair(mu_a, mu_b, group_ids, zero_a, zero_b, temperature,
+                          mask_same_episode=True, mask_zero_zero=True):
+    """Cross-sensor InfoNCE on (mu_a, mu_b) with false-negative masking.
+
+    Args:
+        mu_a, mu_b: (B, D) matched paired means; (mu_a[i], mu_b[i]) is the only
+            positive for index i (same frame seen by the two sensors).
+        group_ids: (B,) long, one id per (object, episode). Same id == same
+            physical contact point.
+        zero_a, zero_b: (B,) bool, True where that sensor reads no-contact.
+        temperature: NT-Xent temperature (cosine sim is divided by it).
+        mask_same_episode: drop same-group off-diagonal pairs from negatives.
+        mask_zero_zero: drop pairs where both ends are no-contact.
+
+    With both masks False this is exactly NT-Xent (2B formulation: intra-modal
+    a-a / b-b and cross-modal a-b negatives all included). Returns
+    (loss, diagnostics_dict). Mean log-loss over the 2B anchors.
+    """
+    B = mu_a.shape[0]
+    N = 2 * B
+    z = torch.cat([F.normalize(mu_a, dim=1), F.normalize(mu_b, dim=1)], dim=0)  # (2B, D)
+    sim = (z @ z.t()) / temperature                                            # (2B, 2B)
+
+    device = sim.device
+    idx = torch.arange(N, device=device)
+    pos_idx = (idx + B) % N                          # i<B -> i+B ; else -> i-B
+
+    g = torch.cat([group_ids, group_ids], dim=0)     # (2B,)
+    zero = torch.cat([zero_a, zero_b], dim=0)        # (2B,) bool
+
+    # Candidate negatives: every off-diagonal entry except the positive.
+    neg_mask = ~torch.eye(N, dtype=torch.bool, device=device)
+    neg_mask[idx, pos_idx] = False
+    if mask_same_episode:
+        neg_mask = neg_mask & (g.unsqueeze(0) != g.unsqueeze(1))
+    both_zero = zero.unsqueeze(0) & zero.unsqueeze(1)
+    if mask_zero_zero:
+        neg_mask = neg_mask & (~both_zero)
+
+    # Denominator = valid negatives + the (always-kept) positive.
+    denom_mask = neg_mask.clone()
+    denom_mask[idx, pos_idx] = True
+
+    neg_inf = torch.finfo(sim.dtype).min
+    logits = sim.masked_fill(~denom_mask, neg_inf)
+    log_prob = logits - torch.logsumexp(logits, dim=1, keepdim=True)
+    loss = -log_prob[idx, pos_idx].mean()
+
+    with torch.no_grad():
+        diag = {
+            'neg_per_anchor': neg_mask.sum(dim=1).float().mean().detach(),
+            'zero_frac': zero.float().mean().detach(),
+        }
+    return loss, diag
+
+
+class CrossModalVAE3DebiasedLoss(nn.Module):
+    """Tri-modal VAE loss for CrossModalVAE3 — 'debiased' variant.
+
+    Identical to CrossModalVAE3Loss EXCEPT the cross-modal alignment term: the
+    pair-wise NT-Xent is replaced by ``debiased_infonce_pair`` — InfoNCE whose
+    denominator drops two kinds of provable false negatives:
+
+        * same (object, episode) frames  (different-episode-only negatives)
+        * zero-zero (no-contact / no-contact) frames, per sensor
+
+    Recon (4× L1 per pair) and KL are unchanged:
+
+        Loss = alpha * sum_p debiased_infonce(mu_a^p, mu_b^p)
+             + lambda_recon * sum_p (L1 recon, 4 branches)
+             + beta        * sum_p (KL_a + KL_b)
+
+    Requires per-frame contact labels: call ``set_contact_lookup`` with a
+    ``ContactLabelLookup`` before the first forward. ``meta`` must be a dict
+    {pair: (object_ids, episode_ids, frame_ids)} (the dataset already returns
+    that triple) so the loss can fetch each frame's no-contact flag.
+
+    Output dict keeps the CrossModalVAE3Loss keys (``infonce``,
+    ``infonce_{pair}``, ``alpha_infonce``, ...) so the tri training / val /
+    logging code is unchanged — those keys carry the debiased-InfoNCE value.
+    Per-pair masking diagnostics are emitted under ``debiased_*_{pair}``.
+    """
+
+    PAIR_NAMES = ("de", "ef", "fd")
+
+    def __init__(self, batch_size=None, temperature=0.01, lambda_recon=1.0,
+                 mask_same_episode=True, mask_zero_zero=True):
+        super().__init__()
+        self.temperature = float(temperature)
+        self.lambda_recon = float(lambda_recon)
+        self.mask_same_episode = bool(mask_same_episode)
+        self.mask_zero_zero = bool(mask_zero_zero)
+        self.contact_lookup = None
+        # group id = object_id * _GROUP_MULT + episode_id. Episodes per object
+        # are < a few hundred; the multiplier just keeps the two fields disjoint.
+        self._group_mult = 1_000_000
+
+    def set_contact_lookup(self, lookup):
+        self.contact_lookup = lookup
+
+    @staticmethod
+    def _shape_match(recon, target):
+        if recon.shape == target.shape:
+            return recon
+        if recon.dim() == target.dim() + 1 and recon.shape[1] == 1:
+            return recon.squeeze(1)
+        if target.dim() == recon.dim() + 1 and target.shape[1] == 1:
+            return recon.unsqueeze(1)
+        return recon
+
+    def forward(self, outs, targets, beta=0.0, alpha=1.0, meta=None):
+        """
+        Args:
+            meta: dict {pair: (object_ids, episode_ids, frame_ids)}. Required.
+            alpha: alignment weight (0->1 curriculum). alpha=0 -> recon-only.
+        """
+        if meta is None:
+            raise ValueError(
+                "CrossModalVAE3DebiasedLoss requires `meta` "
+                "{pair: (object_ids, episode_ids, frame_ids)}; got None."
+            )
+        if self.contact_lookup is None and self.mask_zero_zero:
+            raise ValueError(
+                "CrossModalVAE3DebiasedLoss needs a ContactLabelLookup for the "
+                "zero-zero mask; call set_contact_lookup(...) first (or disable "
+                "the zero mask)."
+            )
+
+        info_per_pair = {}
+        recon_per_pair = {}
+        kl_per_sensor_pair = {}
+        dbg_per_pair = {}
+
+        L_info_total = 0.0
+        L_recon_total = 0.0
+        L_kl_total = 0.0
+
+        for pair in self.PAIR_NAMES:
+            out = outs[pair]
+            x_a, x_b = targets[pair]
+            mu_a, mu_b = out["mu_a"], out["mu_b"]
+            logvar_a, logvar_b = out["logvar_a"], out["logvar_b"]
+
+            if pair not in meta:
+                raise ValueError(f"meta is missing pair '{pair}'")
+            obj_ids, ep_ids, fr_ids = meta[pair]
+            group_ids = obj_ids.long() * self._group_mult + ep_ids.long()
+
+            if self.contact_lookup is not None:
+                zero_a, zero_b, n_found = self.contact_lookup.zero_flags(
+                    pair, obj_ids, ep_ids, fr_ids)
+            else:
+                zero_a = torch.zeros_like(obj_ids, dtype=torch.bool)
+                zero_b = torch.zeros_like(obj_ids, dtype=torch.bool)
+                n_found = 0
+
+            L_info, diag = debiased_infonce_pair(
+                mu_a, mu_b, group_ids, zero_a, zero_b,
+                temperature=self.temperature,
+                mask_same_episode=self.mask_same_episode,
+                mask_zero_zero=self.mask_zero_zero,
+            )
+            L_info_total = L_info_total + L_info
+            info_per_pair[pair] = L_info.detach()
+            diag['label_found_frac'] = torch.tensor(
+                float(n_found) / max(1, obj_ids.shape[0]))
+            dbg_per_pair[pair] = diag
+
+            r_aa = F.l1_loss(self._shape_match(out["recon_aa"], x_a), x_a)
+            r_ba = F.l1_loss(self._shape_match(out["recon_ba"], x_a), x_a)
+            r_bb = F.l1_loss(self._shape_match(out["recon_bb"], x_b), x_b)
+            r_ab = F.l1_loss(self._shape_match(out["recon_ab"], x_b), x_b)
+            L_recon_pair = r_aa + r_ba + r_bb + r_ab
+            L_recon_total = L_recon_total + L_recon_pair
+            recon_per_pair[pair] = {
+                "total": L_recon_pair.detach(),
+                "recon_aa": r_aa.detach(), "recon_ba": r_ba.detach(),
+                "recon_bb": r_bb.detach(), "recon_ab": r_ab.detach(),
+            }
+
+            kl_a = kl_divergence_standard(mu_a, logvar_a)
+            kl_b = kl_divergence_standard(mu_b, logvar_b)
+            L_kl_total = L_kl_total + kl_a + kl_b
+            kl_per_sensor_pair[f"{pair}_a"] = kl_a.detach()
+            kl_per_sensor_pair[f"{pair}_b"] = kl_b.detach()
+
+        total = alpha * L_info_total + self.lambda_recon * L_recon_total + beta * L_kl_total
+
+        info = {
+            "total": total,
+            "infonce": L_info_total.detach(),          # carries debiased value
+            "recon": L_recon_total.detach(),
+            "kl": L_kl_total.detach() if torch.is_tensor(L_kl_total) else torch.tensor(float(L_kl_total)),
+            "beta": torch.tensor(float(beta)),
+            "alpha_infonce": torch.tensor(float(alpha)),
+        }
+        for pair in self.PAIR_NAMES:
+            info[f"infonce_{pair}"] = info_per_pair[pair]
+            info[f"recon_{pair}"] = recon_per_pair[pair]["total"]
+            for k in ("recon_aa", "recon_ba", "recon_bb", "recon_ab"):
+                info[f"{k}_{pair}"] = recon_per_pair[pair][k]
+            for dk, dv in dbg_per_pair[pair].items():
+                info[f"debiased_{dk}_{pair}"] = dv
+        for k, v in kl_per_sensor_pair.items():
+            info[f"kl_{k}"] = v
+        return info
+
+
+def zero_supcon_infonce_pair(mu_a, mu_b, zero_a, zero_b, temperature):
+    """Cross-sensor InfoNCE on (mu_a, mu_b) with a single zero-contact positive
+    group (SupCon-style for the no-contact class only).
+
+    For each anchor i in the 2B concatenation [mu_a; mu_b]:
+      positives = {matched cross-sensor frame (i, i+B mod 2B)}
+                ∪ {j != i : both zero[i] and zero[j] are True}
+      negatives = every other off-diagonal entry.
+
+    Concretely: zero-contact anchors are pulled toward EVERY other zero-contact
+    frame in the batch (cross-sensor and intra-sensor), so the three encoders
+    collapse all 'no contact' frames into one shared region of the latent.
+    Contact anchors keep exactly one positive — their cross-sensor matched
+    frame — so within-contact variation is preserved.
+
+    No same-episode masking: at batch_size=64 with a large dataset the chance
+    of two same-(object, episode) frames colliding in a batch is tiny.
+
+    Args:
+        mu_a, mu_b: (B, D) paired means.
+        zero_a, zero_b: (B,) bool, True where the sensor reads no-contact.
+        temperature: NT-Xent temperature (cosine sim is divided by it).
+
+    Returns:
+        (loss, diagnostics_dict). Per-anchor mean log-loss (SupCon-out form:
+        positives are averaged inside each anchor, then anchors are averaged).
+    """
+    B = mu_a.shape[0]
+    N = 2 * B
+    z = torch.cat([F.normalize(mu_a, dim=1), F.normalize(mu_b, dim=1)], dim=0)  # (2B, D)
+    sim = (z @ z.t()) / temperature                                            # (2B, 2B)
+
+    device = sim.device
+    idx = torch.arange(N, device=device)
+    pair_idx = (idx + B) % N                          # i<B -> i+B ; else -> i-B
+
+    zero = torch.cat([zero_a, zero_b], dim=0)         # (2B,) bool
+
+    # Positives: matched cross-sensor pair  ∪  (zero, zero) anywhere.
+    pos_mask = torch.zeros(N, N, dtype=torch.bool, device=device)
+    pos_mask[idx, pair_idx] = True
+    pos_mask = pos_mask | (zero.unsqueeze(0) & zero.unsqueeze(1))
+    pos_mask[idx, idx] = False                        # never include self
+
+    # Denominator: every off-diagonal entry (standard SupCon-out form).
+    eye = torch.eye(N, dtype=torch.bool, device=device)
+    denom_mask = ~eye
+
+    neg_inf = torch.finfo(sim.dtype).min
+    logits = sim.masked_fill(~denom_mask, neg_inf)
+    log_prob = logits - torch.logsumexp(logits, dim=1, keepdim=True)
+
+    pos_count = pos_mask.sum(dim=1).clamp_min(1)
+    pos_log_prob = (log_prob * pos_mask).sum(dim=1) / pos_count
+    loss = -pos_log_prob.mean()
+
+    with torch.no_grad():
+        neg_mask = denom_mask & ~pos_mask
+        diag = {
+            'pos_per_anchor': pos_mask.sum(dim=1).float().mean().detach(),
+            'neg_per_anchor': neg_mask.sum(dim=1).float().mean().detach(),
+            'zero_frac': zero.float().mean().detach(),
+        }
+    return loss, diag
+
+
+class CrossModalVAE3ZeroSupConLoss(nn.Module):
+    """Tri-modal VAE loss for CrossModalVAE3 — 'zero_supcon' variant.
+
+    Identical to CrossModalVAE3Loss except the cross-modal alignment term:
+    the pair-wise NT-Xent is replaced by ``zero_supcon_infonce_pair`` — InfoNCE
+    where every no-contact frame in the batch is positive to every other
+    no-contact frame (in addition to the always-on matched cross-sensor pair).
+    No episode masking, no zero-zero negative masking — just the extra
+    positives. Contact anchors are unchanged.
+
+        Loss = alpha * sum_p zero_supcon_infonce(mu_a^p, mu_b^p)
+             + lambda_recon * sum_p (L1 recon, 4 branches)
+             + beta        * sum_p (KL_a + KL_b)
+
+    Requires per-frame contact labels: call ``set_contact_lookup`` with a
+    ``ContactLabelLookup`` before the first forward. ``meta`` must be a dict
+    {pair: (object_ids, episode_ids, frame_ids)} (the dataset already returns
+    that triple) so the loss can fetch each frame's no-contact flag.
+
+    Output keys match CrossModalVAE3Loss (``infonce``, ``infonce_{pair}``,
+    ``alpha_infonce``, ...) so the training / val / logging code is unchanged
+    — those keys carry the zero-supcon InfoNCE value. Per-pair diagnostics are
+    emitted under ``zero_supcon_*_{pair}``.
+    """
+
+    PAIR_NAMES = ("de", "ef", "fd")
+
+    def __init__(self, batch_size=None, temperature=0.01, lambda_recon=1.0):
+        super().__init__()
+        self.temperature = float(temperature)
+        self.lambda_recon = float(lambda_recon)
+        self.contact_lookup = None
+
+    def set_contact_lookup(self, lookup):
+        self.contact_lookup = lookup
+
+    @staticmethod
+    def _shape_match(recon, target):
+        if recon.shape == target.shape:
+            return recon
+        if recon.dim() == target.dim() + 1 and recon.shape[1] == 1:
+            return recon.squeeze(1)
+        if target.dim() == recon.dim() + 1 and target.shape[1] == 1:
+            return recon.unsqueeze(1)
+        return recon
+
+    def forward(self, outs, targets, beta=0.0, alpha=1.0, meta=None):
+        """
+        Args:
+            meta: dict {pair: (object_ids, episode_ids, frame_ids)}. Required.
+            alpha: alignment weight (0->1 curriculum). alpha=0 -> recon-only.
+        """
+        if meta is None:
+            raise ValueError(
+                "CrossModalVAE3ZeroSupConLoss requires `meta` "
+                "{pair: (object_ids, episode_ids, frame_ids)}; got None."
+            )
+        if self.contact_lookup is None:
+            raise ValueError(
+                "CrossModalVAE3ZeroSupConLoss needs a ContactLabelLookup; "
+                "call set_contact_lookup(...) first."
+            )
+
+        info_per_pair = {}
+        recon_per_pair = {}
+        kl_per_sensor_pair = {}
+        dbg_per_pair = {}
+
+        L_info_total = 0.0
+        L_recon_total = 0.0
+        L_kl_total = 0.0
+
+        for pair in self.PAIR_NAMES:
+            out = outs[pair]
+            x_a, x_b = targets[pair]
+            mu_a, mu_b = out["mu_a"], out["mu_b"]
+            logvar_a, logvar_b = out["logvar_a"], out["logvar_b"]
+
+            if pair not in meta:
+                raise ValueError(f"meta is missing pair '{pair}'")
+            obj_ids, ep_ids, fr_ids = meta[pair]
+
+            zero_a, zero_b, n_found = self.contact_lookup.zero_flags(
+                pair, obj_ids, ep_ids, fr_ids)
+
+            L_info, diag = zero_supcon_infonce_pair(
+                mu_a, mu_b, zero_a, zero_b, temperature=self.temperature,
+            )
+            L_info_total = L_info_total + L_info
+            info_per_pair[pair] = L_info.detach()
+            diag['label_found_frac'] = torch.tensor(
+                float(n_found) / max(1, obj_ids.shape[0]))
+            dbg_per_pair[pair] = diag
+
+            r_aa = F.l1_loss(self._shape_match(out["recon_aa"], x_a), x_a)
+            r_ba = F.l1_loss(self._shape_match(out["recon_ba"], x_a), x_a)
+            r_bb = F.l1_loss(self._shape_match(out["recon_bb"], x_b), x_b)
+            r_ab = F.l1_loss(self._shape_match(out["recon_ab"], x_b), x_b)
+            L_recon_pair = r_aa + r_ba + r_bb + r_ab
+            L_recon_total = L_recon_total + L_recon_pair
+            recon_per_pair[pair] = {
+                "total": L_recon_pair.detach(),
+                "recon_aa": r_aa.detach(), "recon_ba": r_ba.detach(),
+                "recon_bb": r_bb.detach(), "recon_ab": r_ab.detach(),
+            }
+
+            kl_a = kl_divergence_standard(mu_a, logvar_a)
+            kl_b = kl_divergence_standard(mu_b, logvar_b)
+            L_kl_total = L_kl_total + kl_a + kl_b
+            kl_per_sensor_pair[f"{pair}_a"] = kl_a.detach()
+            kl_per_sensor_pair[f"{pair}_b"] = kl_b.detach()
+
+        total = alpha * L_info_total + self.lambda_recon * L_recon_total + beta * L_kl_total
+
+        info = {
+            "total": total,
+            "infonce": L_info_total.detach(),          # carries zero-supcon value
+            "recon": L_recon_total.detach(),
+            "kl": L_kl_total.detach() if torch.is_tensor(L_kl_total) else torch.tensor(float(L_kl_total)),
+            "beta": torch.tensor(float(beta)),
+            "alpha_infonce": torch.tensor(float(alpha)),
+        }
+        for pair in self.PAIR_NAMES:
+            info[f"infonce_{pair}"] = info_per_pair[pair]
+            info[f"recon_{pair}"] = recon_per_pair[pair]["total"]
+            for k in ("recon_aa", "recon_ba", "recon_bb", "recon_ab"):
+                info[f"{k}_{pair}"] = recon_per_pair[pair][k]
+            for dk, dv in dbg_per_pair[pair].items():
+                info[f"zero_supcon_{dk}_{pair}"] = dv
         for k, v in kl_per_sensor_pair.items():
             info[f"kl_{k}"] = v
         return info

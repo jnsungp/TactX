@@ -1,0 +1,4 @@
+{
+    "train": ["contact/dai_dai_plug_insertion_direct_contact"],
+    "val": ["contact/dai_dai_plug_insertion_direct_val_contact"]
+}

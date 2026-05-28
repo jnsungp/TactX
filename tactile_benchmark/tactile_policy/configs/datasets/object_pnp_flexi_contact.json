@@ -1,0 +1,4 @@
+{
+    "train": ["contact/flexi_flexi_object_pnp_contact"],
+    "val": ["contact/flexi_flexi_object_pnp_val_contact"]
+}

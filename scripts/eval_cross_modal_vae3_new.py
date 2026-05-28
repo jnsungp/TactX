@@ -13,15 +13,15 @@ Reproduces the EXACT same train/val split used during training, then:
 
 Usage:
     python scripts/eval_cross_modal_vae3_new.py \
-    --checkpoint_dir checkpoints/cross_modal_tri/cross_modal_vae3/1_uniforce_small_ball \
-    --dataset_name dataset_sachin_new \
-    --objects small_ball \
-    --contact_label_root contact_labels/dataset_sachin_new \
+    --checkpoint_dir checkpoints/cross_modal_tri/cross_modal_vae3/0_TACTX_nb \
+    --dataset_name dataset_new_concat \
+    --objects circle cylinder cylinder_vertical ellipse large_ball plane plane_horizontal small_ball square triangle \
+    --contact_label_root contact_labels/dataset_new_concat \
     --device cuda:0
 
     # with dynamic evaluation:
     python scripts/eval_cross_modal_vae3_new.py \
-        --checkpoint_dir checkpoints/cross_modal_tri/cross_modal_vae3/1_uniforce_small_ball \
+        --checkpoint_dir checkpoints/cross_modal_tri/cross_modal_vae3/dataset_concat_run_final_20260526_053511 \
         --dataset_name dataset_sachin_new \
         --objects small_ball \
         --dynamic_data_root latent_data_processed_dynamic/pnp latent_data_processed_dynamic/wipe latent_data_processed_dynamic/plug\
@@ -891,6 +891,11 @@ def main():
                         help='Root of per-episode contact label .pt files '
                              '(layout: <root>/<pair_dir>/<obj>/ep****.pt). '
                              'Enables the contact classification probe.')
+    parser.add_argument('--contrastive_only', action='store_true',
+                        help='Evaluate a CrossModalCLR3 (contrastive-only, no '
+                             'decoders) checkpoint instead of CrossModalVAE3. '
+                             'Skips the reconstruction error + recon-viz '
+                             'sections since the CLR model has no decoders.')
     parser.add_argument('--seed', type=int, default=0)
     args = parser.parse_args()
 
@@ -900,16 +905,17 @@ def main():
     torch.manual_seed(args.seed)
 
     # ── Load model ──
+    model_name = 'cross_modal_clr3' if args.contrastive_only else 'cross_modal_vae3'
     with open(os.path.join(args.checkpoint_dir, 'model_details.yaml')) as f:
         model_details = yaml.safe_load(f)
-    model = get_model('cross_modal_vae3', model_details).to(args.device)
+    model = get_model(model_name, model_details).to(args.device)
     ckpt = torch.load(os.path.join(args.checkpoint_dir, 'model_ep100.pt'),
                       map_location=args.device, weights_only=False)
     if isinstance(ckpt, dict) and 'state_dict' in ckpt:
         ckpt = ckpt['state_dict']
     model.load_state_dict(ckpt)
     model.eval()
-    print(f"Loaded {args.checkpoint_dir}/model.pt")
+    print(f"Loaded {args.checkpoint_dir}/model_ep100.pt  (model={model_name})")
 
     # ── Load paired static dataset (same split as training) ──
     pair_strides = {k: v for k, v in
@@ -1102,16 +1108,20 @@ def main():
         else:
             print('\n'.join(cs_lines))
 
-    # ── Reconstruction error (val) ──
-    print('\n=== Reconstruction L1 error (val) ===')
-    recon_lines = ['L1 reconstruction error (val, z-scored space):']
-    for pk in _PAIRS:
-        errs = extract_pair_recon(paired_val[pk], pk, model, args.device)
-        sa, sb = _PAIR_SENSORS[pk]
-        recon_lines.append(f"  {pk}: self_{sa}={errs['self_a']:.4f}  self_{sb}={errs['self_b']:.4f}  "
-                           f"cross_{sa}→{sb}={errs['cross_ab']:.4f}  cross_{sb}→{sa}={errs['cross_ba']:.4f}")
-    recon_txt = '\n'.join(recon_lines)
-    print(recon_txt)
+    # ── Reconstruction error (val) — skipped for contrastive-only (no decoders) ──
+    recon_txt = None
+    if args.contrastive_only:
+        print('\n(skip reconstruction L1 error — CLR model has no decoders)')
+    else:
+        print('\n=== Reconstruction L1 error (val) ===')
+        recon_lines = ['L1 reconstruction error (val, z-scored space):']
+        for pk in _PAIRS:
+            errs = extract_pair_recon(paired_val[pk], pk, model, args.device)
+            sa, sb = _PAIR_SENSORS[pk]
+            recon_lines.append(f"  {pk}: self_{sa}={errs['self_a']:.4f}  self_{sb}={errs['self_b']:.4f}  "
+                               f"cross_{sa}→{sb}={errs['cross_ab']:.4f}  cross_{sb}→{sa}={errs['cross_ba']:.4f}")
+        recon_txt = '\n'.join(recon_lines)
+        print(recon_txt)
 
     # ── Save text metrics ──
     with open(os.path.join(out_dir, 'metrics.txt'), 'w') as f:
@@ -1123,7 +1133,8 @@ def main():
             f.write(contact_txt + '\n\n')
         if contact_score_txt is not None:
             f.write(contact_score_txt + '\n\n')
-        f.write(recon_txt + '\n')
+        if recon_txt is not None:
+            f.write(recon_txt + '\n')
 
     # ── t-SNE: static train + val ──
     print('\n=== t-SNE plots (static) ===')
@@ -1150,14 +1161,17 @@ def main():
                 n_max=args.max_tsne_points, perplexity=args.tsne_perplexity,
             )
 
-    # ── Reconstruction visualizations ──
-    print('\n=== Reconstruction visualizations ===')
-    viz_recon_daimon(paired_val['de'], model, args.device,
-                     os.path.join(out_dir, 'recon_daimon.png'))
-    viz_recon_eflesh(paired_val['de'], model, args.device,
-                     os.path.join(out_dir, 'recon_eflesh.png'))
-    viz_recon_flexi(paired_val['ef'], model, args.device,
-                    os.path.join(out_dir, 'recon_flexi.png'))
+    # ── Reconstruction visualizations — skipped for contrastive-only ──
+    if args.contrastive_only:
+        print('\n(skip reconstruction visualizations — CLR model has no decoders)')
+    else:
+        print('\n=== Reconstruction visualizations ===')
+        viz_recon_daimon(paired_val['de'], model, args.device,
+                         os.path.join(out_dir, 'recon_daimon.png'))
+        viz_recon_eflesh(paired_val['de'], model, args.device,
+                         os.path.join(out_dir, 'recon_eflesh.png'))
+        viz_recon_flexi(paired_val['ef'], model, args.device,
+                        os.path.join(out_dir, 'recon_flexi.png'))
 
     # ── Dynamic evaluation (optional) ──
     if args.dynamic_data_root:

@@ -95,6 +95,11 @@ def main():
                              'model_details["learning_rate"], default 1e-4). '
                              'Use a lower value (e.g. 1e-5) when finetuning '
                              'from --resume_from.')
+    parser.add_argument('--num_workers', type=int, default=0,
+                        help='DataLoader worker processes (default 0 = '
+                             'single-threaded, old behavior). Try 32 to '
+                             'parallelize the per-item torch.load disk reads; '
+                             'also enables pin_memory + persistent_workers.')
     parser.add_argument('--ef_stride', type=int, default=1,
                         help='Keep every Nth frame per episode in ef_pair. '
                              'ef (eFlesh+FlexiTac) is sampled ~2.7x faster '
@@ -104,6 +109,59 @@ def main():
                         help='Per-episode frame stride for de_pair.')
     parser.add_argument('--fd_stride', type=int, default=1,
                         help='Per-episode frame stride for fd_pair.')
+    # --- Debiased (false-negative-masked) InfoNCE -------------------------
+    # Add --debiased at the end to switch the alignment term from plain
+    # InfoNCE to the false-negative-masked variant: negatives come ONLY from
+    # different (object, episode) frames, and zero-zero (no-contact/no-contact)
+    # pairs are masked per sensor. Everything else (recon + KL + curriculum)
+    # is identical, so the no-flag run is byte-for-byte the current baseline.
+    parser.add_argument('--debiased', action='store_true',
+                        help='Use false-negative-masked InfoNCE (different-'
+                             'episode negatives + per-sensor zero-zero mask) '
+                             'instead of plain InfoNCE. Requires '
+                             '--contact_label_root.')
+    parser.add_argument('--contact_label_root', type=str, default=None,
+                        help='Root of per-episode contact labels from '
+                             'scripts/build_contact_labels.py (e.g. '
+                             'contact_labels/dataset_new). Used only with '
+                             '--debiased.')
+    parser.add_argument('--debiased_no_zero_mask', action='store_true',
+                        help='Ablation: keep zero-zero pairs as negatives '
+                             '(turn OFF the no-contact mask).')
+    parser.add_argument('--debiased_no_episode_mask', action='store_true',
+                        help='Ablation: allow same-(object,episode) frames as '
+                             'negatives (turn OFF the different-episode mask).')
+    # --- Zero-SupCon InfoNCE ---------------------------------------------
+    # All no-contact frames in a batch become one positive group (SupCon-
+    # style), in addition to the matched cross-sensor pair. No episode mask
+    # and no zero-zero negative mask — just the extra positives. Same
+    # contact-label dependency as --debiased, mutually exclusive with it.
+    parser.add_argument('--zero_supcon', action='store_true',
+                        help='Use zero-supcon InfoNCE: every no-contact frame '
+                             'in the batch is positive to every other '
+                             'no-contact frame (plus the matched cross-sensor '
+                             'pair). Requires --contact_label_root.')
+    # --- NT-Xent + auxiliary intra-modal cosine smoothness ----------------
+    # Plain NT-Xent on matched cross-sensor pair (baseline-equal) PLUS an
+    # auxiliary intra-modal cosine smoothness term that nudges ±1 same-
+    # (object, episode) frame pairs in each sensor together:
+    #     L_smooth = (1 - cos(mu_a[t], mu_a[t±1])) + (1 - cos(mu_b[t], mu_b[t±1]))
+    # weighted by `neighbor_weight`. Cross-modal contrastive gradient is NOT
+    # diluted (unlike SupCon-style multi-positive), so retrieval / cos_gap
+    # stay close to baseline. Auto-enables the episode-aware batch sampler
+    # so adjacent frames co-occur. No contact labels needed. Mutually
+    # exclusive with --debiased / --zero_supcon.
+    parser.add_argument('--neighbor', action='store_true',
+                        help='Use NT-Xent + auxiliary intra-modal cosine '
+                             'smoothness on ±1 same-(object, episode) frame '
+                             'pairs. Auto-enables episode-aware batch sampler.')
+    parser.add_argument('--neighbor_weight', type=float, default=0.05,
+                        help='λ on the cosine smoothness term (default 0.05). '
+                             'NT-Xent stays at full strength regardless.')
+    parser.add_argument('--neighbor_chunk_size', type=int, default=8,
+                        help='EpisodeChunkBatchSampler chunk size for '
+                             '--neighbor (default 8 contiguous frames per '
+                             'episode chunk; reuses cwcl_chunk_size key).')
     args = parser.parse_args()
 
     # Sweep suffixes (before timestamp) so sweep runs are distinct.
@@ -119,6 +177,22 @@ def main():
         args.run_name = f"{args.run_name}_des{args.de_stride}"
     if args.fd_stride > 1 and args.run_name:
         args.run_name = f"{args.run_name}_fds{args.fd_stride}"
+    if args.debiased and args.run_name:
+        tag = 'db'
+        if args.debiased_no_zero_mask:
+            tag += 'NOzero'
+        if args.debiased_no_episode_mask:
+            tag += 'NOep'
+        args.run_name = f"{args.run_name}_{tag}"
+    if args.zero_supcon and args.run_name:
+        args.run_name = f"{args.run_name}_zsc"
+    if args.neighbor and args.run_name:
+        # _nbr<weight*100> e.g. nbr5 for 0.05, nbr10 for 0.10, nbr50 for 0.5.
+        # Uses *100 so 0.05 and 0.1 don't collide as nbr1.
+        args.run_name = f"{args.run_name}_nbr{int(round(args.neighbor_weight * 100))}"
+
+    if sum([args.debiased, args.zero_supcon, args.neighbor]) > 1:
+        parser.error('--debiased / --zero_supcon / --neighbor are mutually exclusive.')
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     args.run_name = f"{args.run_name}_{timestamp}" if args.run_name else timestamp
@@ -146,6 +220,37 @@ def main():
         model_details['epochs'] = args.epochs
     if args.lr is not None:
         model_details['learning_rate'] = args.lr
+    model_details['num_workers'] = args.num_workers
+
+    # Debiased InfoNCE: only touches model_details when --debiased is passed,
+    # so the default run stays exactly the plain InfoNCE+recon baseline.
+    if args.debiased:
+        if not args.contact_label_root:
+            parser.error('--debiased requires --contact_label_root '
+                         '(e.g. contact_labels/dataset_new)')
+        model_details['loss'] = 'debiased'
+        model_details['contact_label_root'] = args.contact_label_root
+        model_details['debiased_zero_mask'] = not args.debiased_no_zero_mask
+        model_details['debiased_same_episode_mask'] = (
+            not args.debiased_no_episode_mask)
+
+    # Zero-SupCon InfoNCE: same contact-label requirement as --debiased, no
+    # extra knobs. Stays off unless --zero_supcon is passed.
+    if args.zero_supcon:
+        if not args.contact_label_root:
+            parser.error('--zero_supcon requires --contact_label_root '
+                         '(e.g. contact_labels/dataset_new)')
+        model_details['loss'] = 'zero_supcon'
+        model_details['contact_label_root'] = args.contact_label_root
+
+    # Neighbor-window soft-positive InfoNCE: 3-frame temporal window
+    # (matched pair + ±1 neighbors). No contact labels needed; auto-enables
+    # the episode-aware batch sampler via train_tri.
+    if args.neighbor:
+        model_details['loss'] = 'neighbor'
+        model_details['neighbor_weight'] = args.neighbor_weight
+        # train_tri reads `cwcl_chunk_size` to size EpisodeChunkBatchSampler.
+        model_details['cwcl_chunk_size'] = args.neighbor_chunk_size
 
     project = 'CMTEJ_debug' if args.debug else 'CMTEJ_static_sachin'
     output_folder = (f"{args.model_name}_{dataset_details['dataset_type']}_"
@@ -153,6 +258,20 @@ def main():
     wandb.init(project=project, name=output_folder, id=output_folder, resume=False)
 
     print(f"Run name: {args.run_name}")
+    if args.debiased:
+        print(f"Alignment loss: debiased InfoNCE  "
+              f"(zero_zero_mask={model_details['debiased_zero_mask']}, "
+              f"diff_episode_mask={model_details['debiased_same_episode_mask']})")
+        print(f"Contact labels: {args.contact_label_root}")
+    elif args.zero_supcon:
+        print("Alignment loss: zero-supcon InfoNCE "
+              "(all no-contact frames = one positive group)")
+        print(f"Contact labels: {args.contact_label_root}")
+    elif args.neighbor:
+        print(f"Alignment loss: NT-Xent + intra-modal cos smoothness "
+              f"(λ={args.neighbor_weight}, chunk_size={args.neighbor_chunk_size})")
+    else:
+        print("Alignment loss: infonce (baseline)")
     print(f"Paired dataset (sachin): {args.dataset_name}  objects={args.objects}")
     print(f"projection_dim (latent): {model_details['projection_dim']}")
     print(f"Checkpoint dir: checkpoints/{dataset_details['dataset_type']}/"

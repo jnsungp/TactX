@@ -44,9 +44,21 @@ Notes:
 Usage:
     # default: fixed threshold 0.1 on per-episode min-max normalized score
     python scripts/build_contact_labels.py \
-        --data_root /home/junsung/cross_modal_tactile/tactile_benchmark/data/latent_data_new_processed \
-        --out_root contact_labels/dataset_sachin_new \
+        --data_root /home/junsung/cross_modal_tactile/tactile_benchmark/data/latent_data_new_processed_concat \
+        --out_root contact_labels/dataset_new_concat \
         --visualize
+    OBJECTS="circle cylinder cylinder_vertical ellipse large_ball plane plane_horizontal small_ball square triangle"
+
+for OBJ in $OBJECTS; do
+    echo "Processing $OBJ..."
+
+    python scripts/build_contact_labels.py \
+        --data_root /home/junsung/cross_modal_tactile/tactile_benchmark/data/latent_data_new_processed_concat \
+        --out_root contact_labels/dataset_new_concat \
+        --objects "$OBJ" \
+        --visualize
+done
+        
 
     # tweak the threshold
     python scripts/build_contact_labels.py ... --threshold 0.08

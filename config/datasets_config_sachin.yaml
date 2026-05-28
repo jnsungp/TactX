@@ -620,6 +620,157 @@ dataset_new:
       extra_transforms_b: ['rot180']
 
 # ============================================================
+# Rising-phase-truncated twin of dataset_new — built by
+# scripts/build_concat_dataset.py from latent_data_new_processed.
+# Each episode is cut at min(peak_end_a, peak_end_b) so only the contact
+# rise + plateau remains (release phase dropped). Same 10 objects, same
+# pair layout (incl. rot180), and same val_episode_ids as dataset_new —
+# the loader silently skips any val ids whose frames don't exist after
+# truncation. Daimon is full 3-channel (NOT deform-only-replicated), so
+# daimon_stats has distinct per-channel mean/std.
+#
+# Stats are `combined_static` recomputed on this root:
+#   python scripts/compute_per_object_stats.py \
+#       --data_root tactile_benchmark/data/latent_data_new_processed_concat \
+#       --splits static \
+#       --objects circle cylinder cylinder_vertical ellipse large_ball plane \
+#                 plane_horizontal small_ball square triangle \
+#       --out per_object_stats_dataset_new_concat.yaml
+# Contact labels for --debiased / --zero_supcon live under:
+#   contact_labels/dataset_new_concat/{de,ef,fd}_pair/<object>/ep*.pt
+# (built via scripts/build_contact_labels.py against this latent root).
+# ============================================================
+dataset_new_concat:
+  dataset_type: 'cross_modal_tri'
+  data_root: '/home/junsung/cross_modal_tactile/tactile_benchmark/data/latent_data_new_processed_concat'
+
+  episode_val_split: true
+  val_episode_ids:
+    circle:            [0, 6, 11, 17, 22, 28, 34, 39, 45, 46, 52, 57, 63, 68, 74, 80, 85, 91]
+    cylinder:          [0, 6, 12, 18, 24, 30, 36, 42, 43, 48, 54, 59, 64, 69, 74, 80, 85]
+    cylinder_vertical: [0, 6, 11, 17, 23, 28, 34, 35, 41, 46, 52, 58, 63, 69]
+    ellipse:           [0, 6, 11, 17, 22, 28, 34, 39, 45, 46, 51, 56, 61, 66, 72, 77, 82, 87, 92]
+    large_ball:        [0, 6, 11, 17, 22, 28, 33, 39, 40, 46, 51, 57, 62, 68, 73, 79]
+    plane:             [0, 6, 12, 17, 23, 29, 35, 40, 46, 52, 53, 58, 64, 69, 74, 80, 85, 90, 95, 101, 106]
+    plane_horizontal:  [0, 6, 11, 17, 22, 28, 34, 39, 45, 46, 52, 57, 63, 68, 74, 80, 85, 91]
+    small_ball:        [0, 5, 11, 16, 21, 26, 32, 37, 42, 48, 53, 58, 63, 69, 74, 75, 80, 86, 91, 96, 101, 107, 112, 117, 123, 128, 133, 138, 144, 149]
+    square:            [0, 6, 13, 19, 20, 26, 33, 39]
+    triangle:          [0, 6, 11, 17, 22, 28, 33, 39, 40, 46, 51, 57, 62, 68, 73, 79]
+
+  image_size: 224
+
+  daimon_transforms:
+    - 'resize'
+    - 'normalize'
+  daimon_stats:
+    mean: [0.083152, 0.010302, 0.005223]
+    std:  [0.262321, 0.111202, 0.111640]
+
+  eflesh_transforms:
+    - 'normalize'
+  eflesh_stats:
+    mean: [184.452957, -54.771397, 7.123590, -2264.170898, 142.714478, 665.886169, 7.644567, 2893.204346, -788.480042, -143.362244, -3740.175049, 194.513016, -1556.739014, -40.371723, 38.272419]
+    std:  [1700.088989, 2045.422974, 647.671692, 2931.150879, 715.183960, 2000.207275, 931.371643, 3248.212646, 2544.084717, 1076.724609, 3218.890625, 1762.853516, 2574.315918, 526.636169, 1014.934387]
+
+  flexitac_transforms:
+    - 'normalize'
+  flexitac_stats:
+    mean: 0.061290
+    std:  0.158057
+
+  pairs:
+    de:
+      sensor_a: 'daimon'
+      sensor_b: 'eflesh'
+      root:    'de_pair'
+      extra_transforms_a: ['rot180']
+    ef:
+      sensor_a: 'eflesh'
+      sensor_b: 'flexi'
+      root:    'ef_pair'
+      extra_transforms_b: ['rot180']
+    fd:
+      sensor_a: 'flexi'
+      sensor_b: 'daimon'
+      root:    'fd_pair'
+      extra_transforms_b: ['rot180']
+
+# ============================================================
+# Concatenated static dataset — tactile_benchmark/data/latent_data_processed_concat.
+# Same 10 objects / same pair layout as dataset_new, but the per-pair frame
+# count is larger because this root is a concat of multiple collection sweeps:
+#   circle 3452, cylinder 2349, cylinder_vertical 1516, ellipse 2716,
+#   large_ball 2431, plane 2952, plane_horizontal 3401, small_ball 6684,
+#   square 1322, triangle 2978  (frames per pair, de_pair sample).
+# Daimon files in this dataset are deform-only (ch0 normal replicated to 3
+# channels — ch0==ch1==ch2 byte-equal), so daimon_stats below has identical
+# per-channel mean/std (computed without dropping channels, so z-scoring just
+# works without 'deform_only' transform).
+# Stats are `combined_static` recomputed on this root:
+#   python scripts/compute_per_object_stats.py \
+#       --data_root tactile_benchmark/data/latent_data_processed_concat \
+#       --splits static \
+#       --objects circle cylinder cylinder_vertical ellipse large_ball plane \
+#                 plane_horizontal small_ball square triangle \
+#       --out per_object_stats_dataset_concat.yaml
+# Episode val ids are inherited from dataset_new (same object set + episode
+# numbering); the loader skips ids that don't exist in this concat root.
+# Contact labels for --debiased / --zero_supcon live under:
+#   contact_labels/dataset_concat/{de,ef,fd}_pair/<object>/ep*.pt
+# ============================================================
+dataset_concat:
+  dataset_type: 'cross_modal_tri'
+  data_root: '/home/junsung/cross_modal_tactile/tactile_benchmark/data/latent_data_processed_concat'
+
+  episode_val_split: true
+  val_episode_ids:
+    circle:            [0, 6, 11, 17, 22, 28, 34, 39, 45, 46, 52, 57, 63, 68, 74, 80, 85, 91]
+    cylinder:          [0, 6, 12, 18, 24, 30, 36, 42, 43, 48, 54, 59, 64, 69, 74, 80, 85]
+    cylinder_vertical: [0, 6, 11, 17, 23, 28, 34, 35, 41, 46, 52, 58, 63, 69]
+    ellipse:           [0, 6, 11, 17, 22, 28, 34, 39, 45, 46, 51, 56, 61, 66, 72, 77, 82, 87, 92]
+    large_ball:        [0, 6, 11, 17, 22, 28, 33, 39, 40, 46, 51, 57, 62, 68, 73, 79]
+    plane:             [0, 6, 12, 17, 23, 29, 35, 40, 46, 52, 53, 58, 64, 69, 74, 80, 85, 90, 95, 101, 106]
+    plane_horizontal:  [0, 6, 11, 17, 22, 28, 34, 39, 45, 46, 52, 57, 63, 68, 74, 80, 85, 91]
+    small_ball:        [0, 5, 11, 16, 21, 26, 32, 37, 42, 48, 53, 58, 63, 69, 74, 75, 80, 86, 91, 96, 101, 107, 112, 117, 123, 128, 133, 138, 144, 149]
+    square:            [0, 6, 13, 19, 20, 26, 33, 39]
+    triangle:          [0, 6, 11, 17, 22, 28, 33, 39, 40, 46, 51, 57, 62, 68, 73, 79]
+
+  image_size: 224
+
+  daimon_transforms:
+    - 'resize'
+    - 'normalize'
+  daimon_stats:
+    mean: [0.083152, 0.083152, 0.083152]
+    std:  [0.262321, 0.262321, 0.262321]
+
+  eflesh_transforms:
+    - 'normalize'
+  eflesh_stats:
+    mean: [184.452957, -54.771397, 7.123590, -2264.170898, 142.714478, 665.886169, 7.644567, 2893.204346, -788.480042, -143.362244, -3740.175049, 194.513016, -1556.739014, -40.371723, 38.272419]
+    std:  [1700.088989, 2045.422974, 647.671692, 2931.150879, 715.183960, 2000.207275, 931.371643, 3248.212646, 2544.084717, 1076.724609, 3218.890625, 1762.853516, 2574.315918, 526.636169, 1014.934387]
+
+  flexitac_transforms:
+    - 'normalize'
+  flexitac_stats:
+    mean: 0.061290
+    std:  0.158057
+
+  pairs:
+    de:
+      sensor_a: 'daimon'
+      sensor_b: 'eflesh'
+      root:    'de_pair'
+    ef:
+      sensor_a: 'eflesh'
+      sensor_b: 'flexi'
+      root:    'ef_pair'
+    fd:
+      sensor_a: 'flexi'
+      sensor_b: 'daimon'
+      root:    'fd_pair'
+
+# ============================================================
 # Old static dataset — latent_data_processed_static, small_ball ONLY.
 # 30 episodes in de/fd, 22 in ef. Episode-level val split: 6 held-out
 # episodes (~20%). Stats computed from small_ball only via:
@@ -628,6 +779,143 @@ dataset_new:
 #       --objects small_ball --out per_object_stats_small_ball_static.yaml
 # Same de/ef/fd pair layout + rot180 corrections as other sachin entries.
 # ============================================================
+# ============================================================
+# Dynamic paired dataset — latent_data/latent_data_processed_dynamic.
+# Objects: plug, pnp, wipe (3). Same flat pair layout as dataset_concat:
+#   {pair}/{sensor}/{object}/ep****_fr****.pt
+# 5 episodes per object (ep0000–ep0004). val = ep0004.
+#
+# Stats are `combined_static` pooled over plug+pnp+wipe, recomputed via:
+#   python scripts/compute_per_object_stats.py \
+#       --data_root latent_data/latent_data_processed_dynamic \
+#       --splits static \
+#       --objects plug pnp wipe \
+#       --out per_object_stats_dataset_dynamic.yaml
+# (Saved as per_object_stats_dataset_dynamic.yaml in repo root.)
+#
+# Pair layout matches dataset_concat: NO rot180 extra_transforms. Daimon
+# files here are full 3-channel (normal + shear_x + shear_y); per-channel
+# stats below are the genuine 3-channel pool, NOT deform-only-replicated.
+#
+# Use this entry for evaluating the dataset_concat-trained model on dynamic:
+#   --stats_from dataset_dynamic \
+#   --data_root latent_data/latent_data_processed_dynamic \
+#   --objects plug pnp wipe
+# NOTE: the repo convention (see dataset_sachin_dynamic_pnp) is to inherit
+# the TRAINING stats (dataset_concat) so the encoder sees in-distribution
+# z-scoring. Recomputed stats here will shift the input distribution at
+# eval time — only use this entry when you explicitly want dynamic-pooled
+# normalization (e.g. for a separate eval where dynamic-stats baseline is
+# the comparison point).
+# ============================================================
+dataset_dynamic:
+  dataset_type: 'cross_modal_tri'
+  data_root: 'latent_data/latent_data_processed_dynamic'
+
+  episode_val_split: true
+  val_episode_ids: [4]
+
+  image_size: 224
+
+  daimon_transforms:
+    - 'resize'
+    - 'normalize'
+  daimon_stats:
+    mean: [0.092672, -0.098847, -0.099094]
+    std:  [0.206157, 0.457449, 0.199974]
+
+  eflesh_transforms:
+    - 'normalize'
+  eflesh_stats:
+    mean: [570.300232, 2136.968018, 230.360458, -1624.692749, 654.243225, -797.176270, -1228.900269, 4595.757324, 2045.654541, 240.814987, -6077.248047, -179.405731, -409.969666, -567.171265, -121.111389]
+    std:  [957.581970, 1538.826172, 471.006439, 1503.966797, 447.042938, 1353.660767, 1353.903442, 2469.065918, 2302.693115, 801.096313, 2777.749512, 1893.140869, 980.297913, 437.511536, 461.815430]
+
+  flexitac_transforms:
+    - 'normalize'
+  flexitac_stats:
+    mean: 0.120955
+    std:  0.208291
+
+  pairs:
+    de:
+      sensor_a: 'daimon'
+      sensor_b: 'eflesh'
+      root:    'de_pair'
+    ef:
+      sensor_a: 'eflesh'
+      sensor_b: 'flexi'
+      root:    'ef_pair'
+    fd:
+      sensor_a: 'flexi'
+      sensor_b: 'daimon'
+      root:    'fd_pair'
+
+# ============================================================
+# Dynamic paired dataset with Daimon channel-0 duplicated to channels 1/2.
+# Built from latent_data/latent_data_processed_dynamic via
+#   python scripts/build_dynamic_daimon_duplicate.py
+# Output root: latent_data/latent_data_processed_dynamic_daimon_duplicate.
+# Daimon .pt files are rewritten so x[0]==x[1]==x[2] (= the original
+# depth/normal channel). eflesh and flexi files are symlinked unchanged.
+# This matches the deform-only-replicated Daimon format that dataset_concat
+# is trained on, so the dataset_concat-trained encoder sees in-distribution
+# Daimon inputs at dynamic eval.
+#
+# Stats are `combined_static` pooled over plug+pnp+wipe on the duplicated
+# data, recomputed via:
+#   python scripts/compute_per_object_stats.py \
+#       --data_root latent_data/latent_data_processed_dynamic_daimon_duplicate \
+#       --splits static --objects plug pnp wipe \
+#       --out per_object_stats_dataset_dynamic_daimon_duplicate.yaml
+# Daimon per-channel mean/std are now identical across channels (as expected
+# from ch0 replication). eflesh / flexi stats match dataset_dynamic exactly
+# (same underlying files via symlink).
+#
+# Pair layout matches dataset_concat: NO rot180 extra_transforms.
+# val_episode_ids: [4] (ep0004 held out).
+# ============================================================
+dataset_dynamic_daimon_duplicate:
+  dataset_type: 'cross_modal_tri'
+  data_root: 'latent_data/latent_data_processed_dynamic_daimon_duplicate'
+
+  episode_val_split: true
+  val_episode_ids: [4]
+
+  image_size: 224
+
+  daimon_transforms:
+    - 'resize'
+    - 'normalize'
+  daimon_stats:
+    mean: [0.092672, 0.092672, 0.092672]
+    std:  [0.206157, 0.206157, 0.206157]
+
+  eflesh_transforms:
+    - 'normalize'
+  eflesh_stats:
+    mean: [570.300232, 2136.968018, 230.360458, -1624.692749, 654.243225, -797.176270, -1228.900269, 4595.757324, 2045.654541, 240.814987, -6077.248047, -179.405731, -409.969666, -567.171265, -121.111389]
+    std:  [957.581970, 1538.826172, 471.006439, 1503.966797, 447.042938, 1353.660767, 1353.903442, 2469.065918, 2302.693115, 801.096313, 2777.749512, 1893.140869, 980.297913, 437.511536, 461.815430]
+
+  flexitac_transforms:
+    - 'normalize'
+  flexitac_stats:
+    mean: 0.120955
+    std:  0.208291
+
+  pairs:
+    de:
+      sensor_a: 'daimon'
+      sensor_b: 'eflesh'
+      root:    'de_pair'
+    ef:
+      sensor_a: 'eflesh'
+      sensor_b: 'flexi'
+      root:    'ef_pair'
+    fd:
+      sensor_a: 'flexi'
+      sensor_b: 'daimon'
+      root:    'fd_pair'
+
 dataset_sachin_old_smallball:
   dataset_type: 'cross_modal_tri'
   data_root: '/home/junsung/cross_modal_tactile/latent_data_processed_static'

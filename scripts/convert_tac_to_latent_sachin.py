@@ -8,11 +8,18 @@ replaced by latents. Everything else is copied verbatim.
 
 Per-sensor I/O schemas (matches the dataset shapes you confirmed):
 
-    Sensor D (Daimon) — vision-based:
-        in : observation.image.tac0/tac1   (N, 240, 320, 3) uint8
-        ops: (N,H,W,3) → permute (N,3,H,W) → /255 → resize 224 → z-score with
-             dataset_details daimon_stats → model._enc(x, 'D')
-        out: observation.tac0/tac1         (N, 16) float32
+    Sensor D (Daimon) — vision-based, raw 5-channel array:
+        in : observation.tac0/tac1   (N, 384000) float32
+             (= flattened (N, 240, 320, 5) raw daimon: depth + 4 derived chans)
+        ops: reshape (N, 240, 320, 5) → pick channels [0, 3, 4]
+             = [depth, shear_x, shear_y] → permute (N, 3, H, W) → resize 224 →
+             z-score with dataset_details daimon_stats → model._enc(x, 'D')
+        out: observation.tac0/tac1   (N, 16) float32
+
+        IMPORTANT: observation.image.tac0/tac1 (uint8 RGB frames decoded from
+        tac*.mp4) is a *visualization* of the sensor and is NOT the right input
+        — the encoder was trained on [depth, shear_x, shear_y] (see
+        preprocess_cross_modal_new.py::daimon_to_chw, channel indices 0/3/4).
 
     Sensor E (eFlesh) — magnetic vector:
         in : observation.tac0/tac1         (N, 15) float32
@@ -98,13 +105,34 @@ def _zscore(x, mean, std):
 # ---------------------------------------------------------------------------
 
 def preprocess_daimon(raw, dataset_details, image_size, inference_transform='none'):
-    """raw: (N, 240, 320, 3) uint8 → (N, 3, image_size, image_size) float32 z-scored."""
-    x = torch.from_numpy(raw).float() / 255.0                  # (N, H, W, 3)
+    """raw: (N, 384000) float32 from observation.tac0 → (N, 3, image_size, image_size).
+
+    The raw daimon array is (240, 320, 5) per frame, flattened to 384000 in the
+    HDF5. Select channels [0, 3, 4] = [depth, shear_x, shear_y] to match the
+    training-time tensor built by preprocess_cross_modal_new.py::daimon_to_chw
+    (the daimon_stats baked into the checkpoint correspond to *this* layout).
+    """
+    H, W, C = 240, 320, 5
+    expected = H * W * C
+    if raw.ndim == 1:
+        raw = raw.reshape(1, -1)
+    if raw.shape[-1] != expected:
+        raise ValueError(
+            f"daimon raw last-dim={raw.shape[-1]} != {expected} (=240*320*5); "
+            "are you sure --sensor D is being fed observation.tac0 (raw 5-channel) "
+            "and not observation.image.tac0 (tac*.mp4 visualization)?"
+        )
+    x = torch.from_numpy(raw).float().view(-1, H, W, C)        # (N, H, W, 5)
+    x = torch.stack([x[..., 0], x[..., 3], x[..., 4]], dim=-1) # [depth, shear_x, shear_y]
     x = x.permute(0, 3, 1, 2).contiguous()                     # (N, 3, H, W)
     x = transforms.functional.resize(x, [image_size, image_size], antialias=True)
     stats = dataset_details.get('daimon_stats', None)
     if stats is not None:
         x = _zscore(x, stats['mean'], stats['std'])
+    # inference_transform is a uniform flip across all 3 channels — fine to leave
+    # as 'none' (the default). Mirror was a training-time cross-modal alignment;
+    # for single-sensor policy use, encoder consistency between conversion-time
+    # and deploy-time is what matters, not the absolute training orientation.
     x = _apply_transform(x, inference_transform)
     return x
 
@@ -157,7 +185,9 @@ def encode_batch(model, x, sensor, device, latent_type='mu'):
 # ---------------------------------------------------------------------------
 
 _SENSOR_TO_HDF5 = {
-    'D': ('observation.image.tac0', 'observation.image.tac1'),
+    # Daimon: read RAW 5-channel array (shape [N, 240*320*5]) — NOT the tac*.mp4
+    # video visualization at observation.image.tac0/tac1.
+    'D': ('observation.tac0', 'observation.tac1'),
     'E': ('observation.tac0', 'observation.tac1'),
     'F': ('observation.tac0', 'observation.tac1'),
 }
