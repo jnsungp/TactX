@@ -78,7 +78,7 @@ dataset_sachin:
 # ============================================================
 dataset_sachin_static:
   dataset_type: 'cross_modal_tri'
-  data_root: '/home/junsung/cross_modal_tactile/latent_data_processed_static'
+  data_root: 'latent_data_processed_static'
 
   image_size: 224
 
@@ -131,7 +131,7 @@ dataset_sachin_static:
 # ============================================================
 dataset_sachin_static_deform:
   dataset_type: 'cross_modal_tri'
-  data_root: '/home/junsung/cross_modal_tactile/latent_data_processed_static'
+  data_root: 'latent_data_processed_static'
 
   image_size: 224
 
@@ -232,7 +232,7 @@ dataset_sachin_dynamic_pnp:
 # ============================================================
 dataset_sachin_static12:
   dataset_type: 'cross_modal_tri'
-  data_root: '/home/junsung/cross_modal_tactile/latent_data_processed_static'
+  data_root: 'latent_data_processed_static'
 
   # Episode-level train/val split (whole episodes held out — no near-duplicate
   # leakage). Other dataset entries omit this key -> default frame-level split.
@@ -389,7 +389,7 @@ dataset_sachin_dynamic_paired:
 # ============================================================
 dataset_sachin_static12_framesplit:
   dataset_type: 'cross_modal_tri'
-  data_root: '/home/junsung/cross_modal_tactile/latent_data_processed_static'
+  data_root: 'latent_data_processed_static'
 
   image_size: 224
 
@@ -438,7 +438,7 @@ dataset_sachin_static12_framesplit:
 # ============================================================
 dataset_sachin_padded:
   dataset_type: 'cross_modal_tri'
-  data_root: '/home/junsung/cross_modal_tactile/tactile_benchmark/data/latent_data_processed_padded'
+  data_root: 'tactile_benchmark/data/latent_data_processed_padded'
 
   episode_val_split: true
 
@@ -487,14 +487,14 @@ dataset_sachin_padded:
 # Stats below are PLACEHOLDERS carried over from dataset_sachin_static12 —
 # recompute on this dataset before serious training:
 #   python scripts/compute_per_object_stats.py \
-#       --data_root /home/junsung/cross_modal_tactile/tactile_benchmark/data/latent_data_new_processed \
+#       --data_root tactile_benchmark/data/latent_data_new_processed \
 #       --splits static --objects <OBJ>
 # Paste the resulting combined_static block into the *_stats fields here AND in
 # dataset_cross_modal_tri_dynamic_sachin_new (config/datasets_config.yaml).
 # ============================================================
 dataset_sachin_new:
   dataset_type: 'cross_modal_tri'
-  data_root: '/home/junsung/cross_modal_tactile/tactile_benchmark/data/latent_data_new_processed'
+  data_root: 'tactile_benchmark/data/latent_data_new_processed'
 
   episode_val_split: true
   val_episode_ids: [0, 6, 13, 22, 36, 44, 45, 54, 58, 67, 75, 81, 88, 97, 111, 119, 120, 129, 133, 142]
@@ -565,7 +565,7 @@ dataset_sachin_new:
 # ============================================================
 dataset_new:
   dataset_type: 'cross_modal_tri'
-  data_root: '/home/junsung/cross_modal_tactile/tactile_benchmark/data/latent_data_new_processed'
+  data_root: 'tactile_benchmark/data/latent_data_new_processed'
 
   episode_val_split: true
   # Per-object val ids (front-half + back-half even stride, ~20% each object).
@@ -642,7 +642,7 @@ dataset_new:
 # ============================================================
 dataset_new_concat:
   dataset_type: 'cross_modal_tri'
-  data_root: '/home/junsung/cross_modal_tactile/tactile_benchmark/data/latent_data_new_processed_concat'
+  data_root: 'tactile_benchmark/data/latent_data_new_processed_concat'
 
   episode_val_split: true
   val_episode_ids:
@@ -720,7 +720,7 @@ dataset_new_concat:
 # ============================================================
 dataset_concat:
   dataset_type: 'cross_modal_tri'
-  data_root: '/home/junsung/cross_modal_tactile/tactile_benchmark/data/latent_data_processed_concat'
+  data_root: 'tactile_benchmark/data/latent_data_processed_concat'
 
   episode_val_split: true
   val_episode_ids:
@@ -918,7 +918,7 @@ dataset_dynamic_daimon_duplicate:
 
 dataset_sachin_old_smallball:
   dataset_type: 'cross_modal_tri'
-  data_root: '/home/junsung/cross_modal_tactile/latent_data_processed_static'
+  data_root: 'latent_data_processed_static'
 
   episode_val_split: true
   val_episode_ids: [0, 5, 10, 15, 20, 25]

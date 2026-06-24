@@ -16,4 +16,3 @@ pytest
 pyserial
 websockets
 tyro
-pip install 

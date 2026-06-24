@@ -24,7 +24,7 @@ Usage:
         --checkpoint_dir checkpoints/cross_modal_tri/cross_modal_vae3/dataset_concat_run_final_20260526_053511 \
         --dataset_name dataset_sachin_new \
         --objects small_ball \
-        --dynamic_data_root latent_data_processed_dynamic/pnp latent_data_processed_dynamic/wipe latent_data_processed_dynamic/plug\
+        --dynamic_data_root latent_data/latent_data_processed_dynamic/pnp latent_data/latent_data_processed_dynamic/wipe latent_data/latent_data_processed_dynamic/plug \
         --dynamic_objects pnp wipe plug \
         --device cuda:0
 """
@@ -871,6 +871,10 @@ def main():
         description='Eval cross_modal_vae3 with episode_val_split support'
     )
     parser.add_argument('--checkpoint_dir', required=True)
+    parser.add_argument('--checkpoint_file', default=None,
+                        help='Checkpoint filename inside --checkpoint_dir. '
+                             'Defaults to model_ep100.pt when present, '
+                             'otherwise model.pt.')
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--dataset_name', default='dataset_sachin_new',
                         help='Entry in datasets_config_sachin.yaml')
@@ -909,13 +913,22 @@ def main():
     with open(os.path.join(args.checkpoint_dir, 'model_details.yaml')) as f:
         model_details = yaml.safe_load(f)
     model = get_model(model_name, model_details).to(args.device)
-    ckpt = torch.load(os.path.join(args.checkpoint_dir, 'model_ep100.pt'),
-                      map_location=args.device, weights_only=False)
+    if args.checkpoint_file:
+        checkpoint_file = args.checkpoint_file
+    else:
+        checkpoint_file = (
+            'model_ep100.pt'
+            if os.path.exists(os.path.join(args.checkpoint_dir, 'model_ep100.pt'))
+            else 'model.pt'
+        )
+    checkpoint_path = os.path.join(args.checkpoint_dir, checkpoint_file)
+    ckpt = torch.load(checkpoint_path, map_location=args.device,
+                      weights_only=False)
     if isinstance(ckpt, dict) and 'state_dict' in ckpt:
         ckpt = ckpt['state_dict']
     model.load_state_dict(ckpt)
     model.eval()
-    print(f"Loaded {args.checkpoint_dir}/model_ep100.pt  (model={model_name})")
+    print(f"Loaded {checkpoint_path}  (model={model_name})")
 
     # ── Load paired static dataset (same split as training) ──
     pair_strides = {k: v for k, v in

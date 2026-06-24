@@ -1,42 +1,58 @@
-# .gitignore
-checkpoints/
-processed_data/
-tactile_data_new/
-wandb/
-*.egg-info/
+# Python caches and local environments
 __pycache__/
-*.ipynb_checkpoints/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+
+# OS/editor noise
 .DS_Store
-t3/
-visualizations/
-dai_dai_small_ball/
+*.swp
+*.swo
+*~
 
+# Experiment tracking, logs, and temporary dumps
+wandb/
+*.log
 dump/
-latent_data/
 eval_results/
-eval_results/
-latent_data_processed_object/
-latent_data_processed_static/
-latent_data_processed_dynamic/
 processed_data/
+data/logs/
 
-# Generated contact labels / plots
+# Local datasets and generated dataset derivatives
+tactile_data_new/
+tactile_benchmark/data/
+latent_data/
+latent_data_processed*/
 contact_labels/
-config/state/
-checkpoints/latent_data_processed_dynamic_paired/
-
-# CoRL paper/export files
-_CoRL_2026__Cross_sensor_policy_transfer/
-_CoRL_2026__Cross_sensor_policy_transfer.zip
-
-# Local paper/reference files
-related_work_paper/
-vis_latent/
-
-# Local threshold/stat files
 contact_thresholds/
+config/state/
 per_object_stats_dataset*.yaml
 
-# Local LaTeX template
+# Model checkpoints and large local artifacts
+checkpoints/
+tactile_benchmark/train_logs/
+tactile_benchmark/pretrained_weights/
+_CoRL_2026__Cross_sensor_policy_transfer/
+_CoRL_2026__Cross_sensor_policy_transfer.zip
+*.zip
+
+# Generated visualizations and paper-figure exports
+visualizations/
+vis_latent/
+scripts_vis_paper/figs/
+scripts_vis_paper/*.png
+scripts_vis_paper/*.pdf
+scripts_vis_paper/*.csv
+scripts_vis_paper/*.tex
+
+# Local paper/site exports
+related_work_paper/
 paper-template-latex/
 tactx-corl.github.io/
+

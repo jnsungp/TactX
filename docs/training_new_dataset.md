@@ -150,12 +150,13 @@ OBJECTS="circle cylinder cylinder_vertical ellipse large_ball plane plane_horizo
 
 CUDA_VISIBLE_DEVICES=0 python scripts/train_slow_anchor_sachin.py \
     --dataset_name dataset_new \
+    --dynamic_dataset_name dataset_cross_modal_tri_dynamic_sachin_new \
     --device cuda:0 \
     --run_name anchor \
     --objects $OBJECTS \
     --epochs 100 \
     --lambda_slow 4 \
-    --lambda_anchor
+    --lambda_anchor 1.0
 ```
 
 
@@ -169,9 +170,10 @@ CUDA_VISIBLE_DEVICES=0 python scripts/eval_cross_modal_vae3_new.py \
     --checkpoint_dir checkpoints/cross_modal_tri/cross_modal_vae3/dataset_new_run_infonce_recon_db_20260524_172250 \
     --dataset_name dataset_new \
     --objects $OBJECTS \
-            --dynamic_data_root latent_data_processed_dynamic/pnp latent_data_processed_dynamic/wipe latent_data_processed_dynamic/plug\
-        --dynamic_objects pnp wipe plug\ 
+    --dynamic_data_root latent_data/latent_data_processed_dynamic/pnp latent_data/latent_data_processed_dynamic/wipe latent_data/latent_data_processed_dynamic/plug \
+    --dynamic_objects pnp wipe plug \
     --contact_label_root contact_labels/dataset_new \
+    --out_dir eval_results/dataset_new_infonce_recon_dynamic \
     --device cuda:0
 ```
 

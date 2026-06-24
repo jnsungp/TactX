@@ -286,9 +286,9 @@ dataset_cross_modal_tri_dynamic_sachin_padded:
   dataset_type: 'cross_modal_tri_dynamic'
   episode_val_split: true
   sensor_roots:
-    D: '/home/junsung/cross_modal_tactile/tactile_benchmark/data/latent_data_processed_padded/de_pair'
-    E: '/home/junsung/cross_modal_tactile/tactile_benchmark/data/latent_data_processed_padded/de_pair'
-    F: '/home/junsung/cross_modal_tactile/tactile_benchmark/data/latent_data_processed_padded/ef_pair'
+    D: 'tactile_benchmark/data/latent_data_processed_padded/de_pair'
+    E: 'tactile_benchmark/data/latent_data_processed_padded/de_pair'
+    F: 'tactile_benchmark/data/latent_data_processed_padded/ef_pair'
 
 # Dynamic over latent_data_processed_static — pulls per-sensor data from the
 # paired-static pair dirs. NOTE: DynamicSelfDataset picks up every per-object
@@ -299,9 +299,9 @@ dataset_cross_modal_tri_dynamic_sachin_static12:
   dataset_type: 'cross_modal_tri_dynamic'
   episode_val_split: true
   sensor_roots:
-    D: '/home/junsung/cross_modal_tactile/latent_data_processed_static/de_pair'
-    E: '/home/junsung/cross_modal_tactile/latent_data_processed_static/de_pair'
-    F: '/home/junsung/cross_modal_tactile/latent_data_processed_static/ef_pair'
+    D: 'latent_data_processed_static/de_pair'
+    E: 'latent_data_processed_static/de_pair'
+    F: 'latent_data_processed_static/ef_pair'
 
   image_size: 224
 
@@ -363,9 +363,9 @@ dataset_cross_modal_tri_dynamic_sachin_new:
   episode_val_split: true
   val_episode_ids: [0, 6, 13, 22, 36, 44, 45, 54, 58, 67, 75, 81, 88, 97, 111, 119, 120, 129, 133, 142]
   sensor_roots:
-    D: '/home/junsung/cross_modal_tactile/tactile_benchmark/data/latent_data_new_processed/de_pair'
-    E: '/home/junsung/cross_modal_tactile/tactile_benchmark/data/latent_data_new_processed/de_pair'
-    F: '/home/junsung/cross_modal_tactile/tactile_benchmark/data/latent_data_new_processed/ef_pair'
+    D: 'tactile_benchmark/data/latent_data_new_processed/de_pair'
+    E: 'tactile_benchmark/data/latent_data_new_processed/de_pair'
+    F: 'tactile_benchmark/data/latent_data_new_processed/ef_pair'
 
   image_size: 224
 
