@@ -21,8 +21,8 @@ Pairs:    de=(D,E)  ef=(E,F)  fd=(F,D)   (sensor D is pooled from de.a + fd.b, e
 
 Usage:
     python scripts/eval_cross_modal_vae3_object.py \
-        --checkpoint_dir checkpoints/cross_modal_tri/cross_modal_vae3/dataset_new_run_infonce_recon_db_20260524_172250 \
-        --dataset_name dataset_new \
+        --checkpoint_dir checkpoints/cross_modal_tri/cross_modal_vae3/0_TACTX_nb \
+        --dataset_name dataset_new_concat \
         --device cuda:0
 """
 

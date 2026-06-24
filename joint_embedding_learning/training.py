@@ -429,7 +429,7 @@ def tri_train_step(args, train_loaders, model, criterion, optimizer, wandb,
             for k in info:
                 if (k.startswith("kl_") or k.startswith("cwcl_")
                         or k.startswith("debiased_") or k.startswith("neighbor_")
-                        or k.startswith("zero_supcon_")):
+                        or k.startswith("temporal_cos") or k.startswith("zero_supcon_")):
                     log_dict[f"Loss_train/{k}"] = info[k].item() if torch.is_tensor(info[k]) else float(info[k])
 
             log_dict.update(_tri_log_metrics("Metric_train", outs, info))
@@ -553,12 +553,12 @@ def train_tri(train_datasets, validation_datasets, dataset_name, dataset_details
     print('InfoNCE Warmup Start:', getattr(args, 'infonce_warmup_start', 0))
     print('InfoNCE Warmup Epochs:', getattr(args, 'infonce_warmup_epochs', 0))
 
-    # Episode-aware batching: required by CWCL / neighbor so same-episode
-    # frames co-occur in a batch (auto-on for loss in {'cwcl', 'neighbor'};
-    # opt-in elsewhere via use_episode_sampler). Otherwise standard shuffled
-    # DataLoaders.
+    # Episode-aware batching: required by CWCL / neighbor / temporal_cos so
+    # same-episode frames co-occur in a batch (auto-on for loss in those
+    # three; opt-in elsewhere via use_episode_sampler). Otherwise standard
+    # shuffled DataLoaders.
     _use_ep_sampler = (getattr(args, 'use_episode_sampler', False)
-                       or getattr(args, 'loss', 'infonce') in ('cwcl', 'neighbor'))
+                       or getattr(args, 'loss', 'infonce') in ('cwcl', 'neighbor', 'temporal_cos'))
     _chunk = int(getattr(args, 'cwcl_chunk_size', 8))
 
     def _make_loader(ds, seed):

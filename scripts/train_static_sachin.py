@@ -141,27 +141,45 @@ def main():
                              'in the batch is positive to every other '
                              'no-contact frame (plus the matched cross-sensor '
                              'pair). Requires --contact_label_root.')
-    # --- NT-Xent + auxiliary intra-modal cosine smoothness ----------------
-    # Plain NT-Xent on matched cross-sensor pair (baseline-equal) PLUS an
-    # auxiliary intra-modal cosine smoothness term that nudges ±1 same-
-    # (object, episode) frame pairs in each sensor together:
-    #     L_smooth = (1 - cos(mu_a[t], mu_a[t±1])) + (1 - cos(mu_b[t], mu_b[t±1]))
-    # weighted by `neighbor_weight`. Cross-modal contrastive gradient is NOT
-    # diluted (unlike SupCon-style multi-positive), so retrieval / cos_gap
-    # stay close to baseline. Auto-enables the episode-aware batch sampler
-    # so adjacent frames co-occur. No contact labels needed. Mutually
-    # exclusive with --debiased / --zero_supcon.
+    # --- Intra-modal ±1 neighbor soft-positive InfoNCE --------------------
+    # 2B-SupCon-out: matched cross-sensor pair (weight 1.0) + intra-modal
+    # ±1 frame same-(object, episode) (weight `neighbor_weight`, default
+    # 0.5). Negatives = every other off-diagonal entry. Auto-enables the
+    # episode-aware batch sampler so ±1 frames co-occur in batches. No
+    # contact labels needed. Mutually exclusive with --debiased / --zero_supcon.
     parser.add_argument('--neighbor', action='store_true',
-                        help='Use NT-Xent + auxiliary intra-modal cosine '
-                             'smoothness on ±1 same-(object, episode) frame '
-                             'pairs. Auto-enables episode-aware batch sampler.')
-    parser.add_argument('--neighbor_weight', type=float, default=0.05,
-                        help='λ on the cosine smoothness term (default 0.05). '
-                             'NT-Xent stays at full strength regardless.')
+                        help='Use intra-modal ±1 neighbor soft-positive '
+                             'InfoNCE: matched pair (1.0) + same-(object, '
+                             'episode) intra-modal ±1 (neighbor_weight). '
+                             'Auto-enables episode-aware batch sampler.')
+    parser.add_argument('--neighbor_weight', type=float, default=0.5,
+                        help='Soft-positive weight for intra-modal |Δf|==1 '
+                             '(default 0.5; matched pair stays at 1.0).')
     parser.add_argument('--neighbor_chunk_size', type=int, default=8,
                         help='EpisodeChunkBatchSampler chunk size for '
                              '--neighbor (default 8 contiguous frames per '
                              'episode chunk; reuses cwcl_chunk_size key).')
+    # --- Temporal cosine alignment (auxiliary on top of baseline NT-Xent) -
+    # Plain NT-Xent on matched cross-sensor pair (baseline-equal — negative
+    # set / gradient unchanged) PLUS an auxiliary cosine alignment term on
+    # intra-modal ±1 same-(object, episode) frames:
+    #     L_tcos = (1 - cos(mu_a[t], mu_a[t±1])) + (1 - cos(mu_b[t], mu_b[t±1]))
+    # weighted by `temporal_cos_weight` (default 0.05). Unlike --neighbor it
+    # does NOT add ±1 frames as InfoNCE positives, so cross-modal contrast
+    # gradient is not diluted. Mutually exclusive with --neighbor / --debiased
+    # / --zero_supcon.
+    parser.add_argument('--temporal_cos', action='store_true',
+                        help='Baseline NT-Xent + intra-modal cosine alignment '
+                             'on ±1 same-(object, episode) frames. Cross-modal '
+                             'contrast untouched. Auto-enables episode-aware '
+                             'batch sampler.')
+    parser.add_argument('--temporal_cos_weight', type=float, default=0.05,
+                        help='λ for the cosine alignment term (default 0.05). '
+                             'NT-Xent stays at full strength regardless.')
+    parser.add_argument('--temporal_cos_chunk_size', type=int, default=8,
+                        help='EpisodeChunkBatchSampler chunk size for '
+                             '--temporal_cos (default 8; reuses '
+                             'cwcl_chunk_size key).')
     args = parser.parse_args()
 
     # Sweep suffixes (before timestamp) so sweep runs are distinct.
@@ -190,9 +208,13 @@ def main():
         # _nbr<weight*100> e.g. nbr5 for 0.05, nbr10 for 0.10, nbr50 for 0.5.
         # Uses *100 so 0.05 and 0.1 don't collide as nbr1.
         args.run_name = f"{args.run_name}_nbr{int(round(args.neighbor_weight * 100))}"
+    if args.temporal_cos and args.run_name:
+        # _tcos<weight*100> e.g. tcos5 for 0.05, tcos10 for 0.10.
+        args.run_name = f"{args.run_name}_tcos{int(round(args.temporal_cos_weight * 100))}"
 
-    if sum([args.debiased, args.zero_supcon, args.neighbor]) > 1:
-        parser.error('--debiased / --zero_supcon / --neighbor are mutually exclusive.')
+    if sum([args.debiased, args.zero_supcon, args.neighbor, args.temporal_cos]) > 1:
+        parser.error('--debiased / --zero_supcon / --neighbor / --temporal_cos '
+                     'are mutually exclusive.')
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     args.run_name = f"{args.run_name}_{timestamp}" if args.run_name else timestamp
@@ -252,6 +274,13 @@ def main():
         # train_tri reads `cwcl_chunk_size` to size EpisodeChunkBatchSampler.
         model_details['cwcl_chunk_size'] = args.neighbor_chunk_size
 
+    # Temporal cosine alignment: baseline NT-Xent + auxiliary cos pull on
+    # intra-modal ±1 same-(obj, ep) frames. Cross-modal contrast unchanged.
+    if args.temporal_cos:
+        model_details['loss'] = 'temporal_cos'
+        model_details['temporal_cos_weight'] = args.temporal_cos_weight
+        model_details['cwcl_chunk_size'] = args.temporal_cos_chunk_size
+
     project = 'CMTEJ_debug' if args.debug else 'CMTEJ_static_sachin'
     output_folder = (f"{args.model_name}_{dataset_details['dataset_type']}_"
                      f"sachin_{args.dataset_name}_{args.run_name}")
@@ -268,8 +297,13 @@ def main():
               "(all no-contact frames = one positive group)")
         print(f"Contact labels: {args.contact_label_root}")
     elif args.neighbor:
-        print(f"Alignment loss: NT-Xent + intra-modal cos smoothness "
-              f"(λ={args.neighbor_weight}, chunk_size={args.neighbor_chunk_size})")
+        print(f"Alignment loss: intra-modal ±1 neighbor soft-positive "
+              f"InfoNCE (weight={args.neighbor_weight}, "
+              f"chunk_size={args.neighbor_chunk_size})")
+    elif args.temporal_cos:
+        print(f"Alignment loss: baseline NT-Xent + temporal cos "
+              f"alignment (λ={args.temporal_cos_weight}, "
+              f"chunk_size={args.temporal_cos_chunk_size})")
     else:
         print("Alignment loss: infonce (baseline)")
     print(f"Paired dataset (sachin): {args.dataset_name}  objects={args.objects}")

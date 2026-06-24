@@ -1,0 +1,4 @@
+{
+    "train": ["TACTX_concat/dai_dai_object_pnp_latent_TACTX_concat"],
+    "val": ["TACTX_concat/dai_dai_object_pnp_val_latent_TACTX_concat"]
+}

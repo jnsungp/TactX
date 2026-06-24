@@ -588,24 +588,45 @@ class CrossModalVAE3CWCLLoss(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Auxiliary intra-modal temporal cosine smoothness
+# Intra-modal ±1 neighbor soft-positive contrastive loss
 # ---------------------------------------------------------------------------
 #
-# Plain InfoNCE (NT-Xent on matched cross-sensor pair) is kept byte-equal to
-# the baseline — so cross-modal contrast is not diluted, negative push stays
-# at full strength. On top of that, an auxiliary cosine smoothness term
-# nudges each sensor's adjacent-frame latents together:
+# 2B-style SupCon formulation. Concatenate the matched paired means
+# [mu_a; mu_b] into a (2B, D) stack, then for each anchor i in [0, 2B):
 #
-#     L_smooth =  λ · (1 - cos(mu_a[t], mu_a[t±1]))
-#               + λ · (1 - cos(mu_b[t], mu_b[t±1]))
+#   - matched cross-sensor frame (i, (i+B) % 2B)               → weight 1.0
+#   - same modality, same (object, episode), |Δframe| == 1     → weight w
+#   - everything else off-diagonal                              → negative
 #
-# restricted to same (object, episode) pairs in the current batch. Cosine
-# (not L2) matches the metric we ultimately measure (cos_pos / cos_gap) and
-# does not couple to KL-regularized latent norms.
-#
-# Same `meta = (object_ids, episode_ids, frame_ids)` plumbing as CWCL, same
-# EpisodeChunkBatchSampler requirement so ±1 frames co-occur in the batch.
-# When λ = 0 this reduces exactly to CrossModalVAE3Loss.
+# The ±1 neighbors are deliberately INTRA-modal: temporal smoothness happens
+# inside each sensor's latent trajectory, while cross-modal ±1 pairs stay
+# strictly in the denominator (negatives). Same `meta = (object_ids,
+# episode_ids, frame_ids)` plumbing as CWCL, same EpisodeChunkBatchSampler
+# requirement so adjacent same-episode frames co-occur in the batch
+# (otherwise the ±1 mask is mostly empty and this reduces to plain NT-Xent).
+
+
+def plain_infonce_pair(mu_a, mu_b, temperature):
+    """Batch-size-agnostic NT-Xent on matched cross-sensor pairs.
+
+    Equivalent to ``simclr.modules.NT_Xent(B, temperature, 1)(mu_a, mu_b)``
+    but builds the (2B, 2B) mask per call, so it accepts ANY B — needed when
+    paired with EpisodeChunkBatchSampler, which emits variable-size batches.
+    """
+    B = mu_a.shape[0]
+    N = 2 * B
+    z = torch.cat([F.normalize(mu_a, dim=1), F.normalize(mu_b, dim=1)], dim=0)  # (2B, D)
+    sim = (z @ z.t()) / temperature                                            # (2B, 2B)
+
+    device = sim.device
+    idx = torch.arange(N, device=device)
+    pair_idx = (idx + B) % N
+
+    eye = torch.eye(N, dtype=torch.bool, device=device)
+    neg_inf = torch.finfo(sim.dtype).min
+    logits = sim.masked_fill(eye, neg_inf)                # remove self from denominator
+    log_prob = logits - torch.logsumexp(logits, dim=1, keepdim=True)
+    return -log_prob[idx, pair_idx].mean()
 
 
 def temporal_cos_smoothness_per_pair(mu_a, mu_b, obj_ids, ep_ids, fr_ids,
@@ -616,7 +637,8 @@ def temporal_cos_smoothness_per_pair(mu_a, mu_b, obj_ids, ep_ids, fr_ids,
     |frame_i - frame_j| == 1, accumulate
         (1 - cos(mu_a[i], mu_a[j]))  and  (1 - cos(mu_b[i], mu_b[j])).
     Each sensor is averaged over the neighbor pairs it sees, then the two
-    sensors are averaged together. Cross-modal logits are NOT touched.
+    sensors are averaged together. Cross-modal logits are NOT touched, so
+    NT-Xent gradient on the matched pair stays at full strength.
 
     Returns (loss, n_pairs). When no ±1 neighbor pairs exist in the batch
     the loss is a zero scalar (autograd-safe) and n_pairs == 0.
@@ -654,49 +676,111 @@ def temporal_cos_smoothness_per_pair(mu_a, mu_b, obj_ids, ep_ids, fr_ids,
     return loss, n_pairs
 
 
+def neighbor_intra_infonce_pair(mu_a, mu_b, obj_ids, ep_ids, fr_ids,
+                                temperature, neighbor_weight=0.5,
+                                same_episode_only=True):
+    """Cross-sensor InfoNCE on (mu_a, mu_b) with intra-modal ±1 neighbor
+    soft positives.
+
+    SupCon-out form: for each anchor in the 2B concatenation [mu_a; mu_b],
+    positives are the matched cross-sensor frame (weight 1.0) and the
+    intra-modal ±1 frame on the same (object, episode) (weight
+    `neighbor_weight`). Negatives = every other off-diagonal entry.
+
+    Returns (loss, diagnostics_dict). Per-anchor weight-normalized
+    soft cross-entropy averaged over the 2B anchors. Batch-size agnostic
+    (mask built per call), so this works under EpisodeChunkBatchSampler
+    even when chunks make the final batch smaller than nominal.
+    """
+    B = mu_a.shape[0]
+    N = 2 * B
+    device = mu_a.device
+
+    z = torch.cat([F.normalize(mu_a, dim=1), F.normalize(mu_b, dim=1)], dim=0)  # (2B, D)
+    sim = (z @ z.t()) / temperature                                            # (2B, 2B)
+
+    idx = torch.arange(N, device=device)
+    pair_idx = (idx + B) % N                          # matched cross-sensor index
+
+    # Meta is per matched slot — replicate for both modality halves so a
+    # (2B, 2B) comparison knows each row/column's (obj, ep, frame, modality).
+    obj2 = torch.cat([obj_ids, obj_ids], dim=0)        # (2B,)
+    ep2 = torch.cat([ep_ids, ep_ids], dim=0)
+    fr2 = torch.cat([fr_ids, fr_ids], dim=0)
+    mod = torch.cat([
+        torch.zeros(B, dtype=torch.long, device=device),
+        torch.ones(B, dtype=torch.long, device=device),
+    ], dim=0)                                          # 0 = sensor_a, 1 = sensor_b
+
+    same_obj = obj2.unsqueeze(0) == obj2.unsqueeze(1)
+    same_obj_ep = same_obj
+    if same_episode_only:
+        same_obj_ep = same_obj_ep & (ep2.unsqueeze(0) == ep2.unsqueeze(1))
+    same_mod = mod.unsqueeze(0) == mod.unsqueeze(1)
+    dfr = (fr2.unsqueeze(0) - fr2.unsqueeze(1)).abs()
+    intra_neighbor = same_obj_ep & same_mod & (dfr == 1)
+
+    # Positive weight matrix
+    W = torch.zeros(N, N, dtype=torch.float32, device=device)
+    W[idx, pair_idx] = 1.0                             # matched cross-sensor
+    W = torch.where(intra_neighbor, torch.full_like(W, float(neighbor_weight)), W)
+    eye = torch.eye(N, dtype=torch.bool, device=device)
+    W = W.masked_fill(eye, 0.0)                        # never include self
+
+    # Denominator = every off-diagonal entry (SupCon-out form)
+    denom_mask = ~eye
+    neg_inf = torch.finfo(sim.dtype).min
+    logits = sim.masked_fill(~denom_mask, neg_inf)
+    log_prob = logits - torch.logsumexp(logits, dim=1, keepdim=True)
+
+    # Soft cross-entropy: row-normalize the positive weights, then -sum(W * log p)
+    pos_mass = W.sum(dim=1).clamp_min(1e-8)
+    W_norm = W / pos_mass.unsqueeze(1)
+    per_row = -(W_norm * log_prob).sum(dim=1)
+    loss = per_row.mean()
+
+    with torch.no_grad():
+        # Count strictly-neighbor positives per anchor (excludes matched pair).
+        n_neighbors = intra_neighbor.float().sum(dim=1)
+        eff_pos = (pos_mass.pow(2) / W.pow(2).sum(dim=1).clamp_min(1e-8))
+        diag = {
+            'neighbor_count_mean': n_neighbors.mean().detach(),
+            'neighbor_row_mass_mean': pos_mass.mean().detach(),
+            'neighbor_effective_pos_mean': eff_pos.mean().detach(),
+        }
+    return loss, diag
+
+
 class CrossModalVAE3NeighborLoss(nn.Module):
     """Tri-modal VAE loss for CrossModalVAE3 — 'neighbor' variant.
 
-    Baseline CrossModalVAE3Loss (matched-pair NT-Xent + 4-branch L1 recon +
-    KL) PLUS an auxiliary intra-modal cosine smoothness term:
+    Cross-modal alignment uses ``neighbor_intra_infonce_pair`` (2B-SupCon-out
+    form with intra-modal ±1 neighbor soft positives). The matched
+    cross-sensor pair stays the unique cross-modal positive (weight 1.0);
+    ±1 frame same-(object, episode) neighbors are added as INTRA-modal
+    positives (weight `neighbor_weight`, default 0.5).
 
-        L_smooth = (1 - cos(mu_a[t], mu_a[t±1])) + (1 - cos(mu_b[t], mu_b[t±1]))
-
-    restricted to ±1 same-(object, episode) frame pairs in the current batch
-    and averaged over those pairs. The NT-Xent term is byte-equal to the
-    baseline — cross-modal contrast is NOT diluted — so this only adds a
-    gentle temporal smoothness regularizer per sensor.
-
-        Loss = alpha * sum_p [ NT-Xent(mu_a^p, mu_b^p) + neighbor_weight * L_smooth^p ]
+        Loss = alpha * sum_p neighbor_intra_infonce(mu_a^p, mu_b^p)
              + lambda_recon * sum_p (L1 recon, 4 branches)
              + beta        * sum_p (KL_a + KL_b)
 
     Requires `meta = {pair: (object_ids, episode_ids, frame_ids)}` and an
-    episode-aware batch sampler so ±1 frames co-occur in the batch —
-    otherwise L_smooth degrades to 0 and this becomes CrossModalVAE3Loss
-    exactly. (train_tri auto-enables EpisodeChunkBatchSampler when
-    loss=='neighbor'.)
+    episode-aware batch sampler so ±1 neighbors co-occur in the batch —
+    otherwise the soft-positive mask is mostly empty and this degrades to
+    plain InfoNCE. (train_tri auto-enables EpisodeChunkBatchSampler when
+    loss=='neighbor'.) Batch-size agnostic — handles variable-size chunked
+    batches from EpisodeChunkBatchSampler.
     """
 
     PAIR_NAMES = ("de", "ef", "fd")
 
-    def __init__(self, batch_size, temperature, lambda_recon=1.0,
-                 neighbor_weight=0.05, same_episode_only=True):
+    def __init__(self, batch_size=None, temperature=0.5, lambda_recon=1.0,
+                 neighbor_weight=0.5, same_episode_only=True):
         super().__init__()
-        if NT_Xent is None:
-            raise ImportError(
-                "simclr.modules.NT_Xent is required for CrossModalVAE3NeighborLoss"
-            )
-        self.nt_xent_de = NT_Xent(batch_size, temperature, 1)
-        self.nt_xent_ef = NT_Xent(batch_size, temperature, 1)
-        self.nt_xent_fd = NT_Xent(batch_size, temperature, 1)
+        self.temperature = float(temperature)
         self.lambda_recon = float(lambda_recon)
         self.neighbor_weight = float(neighbor_weight)
         self.same_episode_only = bool(same_episode_only)
-
-    def _nt_for(self, pair):
-        return {"de": self.nt_xent_de, "ef": self.nt_xent_ef,
-                "fd": self.nt_xent_fd}[pair]
 
     @staticmethod
     def _shape_match(recon, target):
@@ -716,13 +800,11 @@ class CrossModalVAE3NeighborLoss(nn.Module):
             )
 
         info_per_pair = {}
-        smooth_per_pair = {}
-        smooth_n_per_pair = {}
         recon_per_pair = {}
         kl_per_sensor_pair = {}
+        nbr_stats = {}
 
         L_info_total = 0.0
-        L_smooth_total = 0.0
         L_recon_total = 0.0
         L_kl_total = 0.0
 
@@ -736,21 +818,16 @@ class CrossModalVAE3NeighborLoss(nn.Module):
                 raise ValueError(f"meta is missing pair '{pair}'")
             obj_ids, ep_ids, fr_ids = meta[pair]
 
-            # 1) Plain NT-Xent on matched cross-sensor pair (baseline-equal).
-            L_info = self._nt_for(pair)(mu_a, mu_b)
-            L_info_total = L_info_total + L_info
-            info_per_pair[pair] = L_info.detach()
-
-            # 2) Auxiliary intra-modal cos smoothness on ±1 same-(obj, ep).
-            L_smooth, n_pairs = temporal_cos_smoothness_per_pair(
+            L_info, diag = neighbor_intra_infonce_pair(
                 mu_a, mu_b, obj_ids, ep_ids, fr_ids,
+                temperature=self.temperature,
+                neighbor_weight=self.neighbor_weight,
                 same_episode_only=self.same_episode_only,
             )
-            L_smooth_total = L_smooth_total + L_smooth
-            smooth_per_pair[pair] = L_smooth.detach()
-            smooth_n_per_pair[pair] = n_pairs
+            L_info_total = L_info_total + L_info
+            info_per_pair[pair] = L_info.detach()
+            nbr_stats[pair] = diag
 
-            # 3) Recon (4 L1 branches).
             r_aa = F.l1_loss(self._shape_match(out["recon_aa"], x_a), x_a)
             r_ba = F.l1_loss(self._shape_match(out["recon_ba"], x_a), x_a)
             r_bb = F.l1_loss(self._shape_match(out["recon_bb"], x_b), x_b)
@@ -769,27 +846,174 @@ class CrossModalVAE3NeighborLoss(nn.Module):
             kl_per_sensor_pair[f"{pair}_a"] = kl_a.detach()
             kl_per_sensor_pair[f"{pair}_b"] = kl_b.detach()
 
-        L_align_total = L_info_total + self.neighbor_weight * L_smooth_total
-        total = alpha * L_align_total + self.lambda_recon * L_recon_total + beta * L_kl_total
+        total = alpha * L_info_total + self.lambda_recon * L_recon_total + beta * L_kl_total
 
         info = {
             "total": total,
-            "infonce": L_info_total.detach(),          # plain NT-Xent (cross-modal align)
+            "infonce": L_info_total.detach(),          # carries neighbor-CL value
             "recon": L_recon_total.detach(),
             "kl": L_kl_total.detach() if torch.is_tensor(L_kl_total) else torch.tensor(float(L_kl_total)),
             "beta": torch.tensor(float(beta)),
             "alpha_infonce": torch.tensor(float(alpha)),
         }
-        info["neighbor_smooth_total"] = (L_smooth_total.detach() if torch.is_tensor(L_smooth_total)
-                                         else torch.tensor(float(L_smooth_total)))
-        info["neighbor_weight"] = torch.tensor(float(self.neighbor_weight))
         for pair in self.PAIR_NAMES:
             info[f"infonce_{pair}"] = info_per_pair[pair]
             info[f"recon_{pair}"] = recon_per_pair[pair]["total"]
             for k in ("recon_aa", "recon_ba", "recon_bb", "recon_ab"):
                 info[f"{k}_{pair}"] = recon_per_pair[pair][k]
-            info[f"neighbor_smooth_{pair}"] = smooth_per_pair[pair]
-            info[f"neighbor_pair_count_{pair}"] = torch.tensor(float(smooth_n_per_pair[pair]))
+            for sk, sv in nbr_stats[pair].items():
+                info[f"{sk}_{pair}"] = sv if torch.is_tensor(sv) else torch.tensor(float(sv))
+        for k, v in kl_per_sensor_pair.items():
+            info[f"kl_{k}"] = v
+        return info
+
+
+# ---------------------------------------------------------------------------
+# Baseline NT-Xent + auxiliary temporal cosine alignment
+# ---------------------------------------------------------------------------
+#
+# Sibling of ``CrossModalVAE3NeighborLoss``: keeps the cross-modal contrast
+# byte-equal to the baseline (plain NT-Xent on the matched pair) and adds
+# a separate cosine alignment term on intra-modal ±1 same-(object, episode)
+# frames:
+#
+#     L_temporal_cos = (1 - cos(mu_a[t], mu_a[t±1])) + (1 - cos(mu_b[t], mu_b[t±1]))
+#
+# averaged over neighbor pairs that happen to be in the batch. NT-Xent's
+# negative set / gradient is NOT modified (no SupCon weight normalization),
+# so retrieval / cos_gap stay close to baseline; the extra term only adds
+# a gentle "adjacent frames should align" pull per sensor. When λ = 0 this
+# reduces exactly to CrossModalVAE3Loss.
+
+
+class CrossModalVAE3TemporalCosLoss(nn.Module):
+    """Tri-modal VAE loss for CrossModalVAE3 — 'temporal_cos' variant.
+
+    Baseline CrossModalVAE3Loss (matched-pair NT-Xent + 4-branch L1 recon +
+    KL) PLUS an auxiliary intra-modal cosine alignment term:
+
+        L_tcos = (1 - cos(mu_a[t], mu_a[t±1])) + (1 - cos(mu_b[t], mu_b[t±1]))
+
+    restricted to ±1 same-(object, episode) frame pairs in the current batch.
+    The NT-Xent term is byte-equal to the baseline — cross-modal contrast is
+    NOT diluted, the negative set is untouched — so this only adds a gentle
+    temporal alignment regularizer per sensor.
+
+        Loss = alpha * sum_p [ NT-Xent(mu_a^p, mu_b^p) + temporal_cos_weight * L_tcos^p ]
+             + lambda_recon * sum_p (L1 recon, 4 branches)
+             + beta        * sum_p (KL_a + KL_b)
+
+    Uses ``plain_infonce_pair`` for NT-Xent (batch-size-agnostic), so this
+    works under EpisodeChunkBatchSampler (variable batch size). When λ = 0
+    the loss is identical to CrossModalVAE3Loss.
+
+    Requires `meta = {pair: (object_ids, episode_ids, frame_ids)}`. An
+    episode-aware batch sampler is helpful (otherwise ±1 frames rarely
+    co-occur and L_tcos hardly fires); train_tri auto-enables
+    EpisodeChunkBatchSampler when loss=='temporal_cos'.
+    """
+
+    PAIR_NAMES = ("de", "ef", "fd")
+
+    def __init__(self, batch_size=None, temperature=0.5, lambda_recon=1.0,
+                 temporal_cos_weight=0.05, same_episode_only=True):
+        super().__init__()
+        self.temperature = float(temperature)
+        self.lambda_recon = float(lambda_recon)
+        self.temporal_cos_weight = float(temporal_cos_weight)
+        self.same_episode_only = bool(same_episode_only)
+
+    @staticmethod
+    def _shape_match(recon, target):
+        if recon.shape == target.shape:
+            return recon
+        if recon.dim() == target.dim() + 1 and recon.shape[1] == 1:
+            return recon.squeeze(1)
+        if target.dim() == recon.dim() + 1 and target.shape[1] == 1:
+            return recon.unsqueeze(1)
+        return recon
+
+    def forward(self, outs, targets, beta=0.0, alpha=1.0, meta=None):
+        if meta is None:
+            raise ValueError(
+                "CrossModalVAE3TemporalCosLoss requires `meta` "
+                "{pair: (object_ids, episode_ids, frame_ids)}; got None."
+            )
+
+        info_per_pair = {}
+        tcos_per_pair = {}
+        tcos_n_per_pair = {}
+        recon_per_pair = {}
+        kl_per_sensor_pair = {}
+
+        L_info_total = 0.0
+        L_tcos_total = 0.0
+        L_recon_total = 0.0
+        L_kl_total = 0.0
+
+        for pair in self.PAIR_NAMES:
+            out = outs[pair]
+            x_a, x_b = targets[pair]
+            mu_a, mu_b = out["mu_a"], out["mu_b"]
+            logvar_a, logvar_b = out["logvar_a"], out["logvar_b"]
+
+            if pair not in meta:
+                raise ValueError(f"meta is missing pair '{pair}'")
+            obj_ids, ep_ids, fr_ids = meta[pair]
+
+            # 1) Plain NT-Xent on matched cross-sensor pair (baseline-equal).
+            L_info = plain_infonce_pair(mu_a, mu_b, self.temperature)
+            L_info_total = L_info_total + L_info
+            info_per_pair[pair] = L_info.detach()
+
+            # 2) Auxiliary intra-modal cosine alignment on ±1 same-(obj, ep).
+            L_tcos, n_pairs = temporal_cos_smoothness_per_pair(
+                mu_a, mu_b, obj_ids, ep_ids, fr_ids,
+                same_episode_only=self.same_episode_only,
+            )
+            L_tcos_total = L_tcos_total + L_tcos
+            tcos_per_pair[pair] = L_tcos.detach() if torch.is_tensor(L_tcos) else torch.tensor(float(L_tcos))
+            tcos_n_per_pair[pair] = n_pairs
+
+            r_aa = F.l1_loss(self._shape_match(out["recon_aa"], x_a), x_a)
+            r_ba = F.l1_loss(self._shape_match(out["recon_ba"], x_a), x_a)
+            r_bb = F.l1_loss(self._shape_match(out["recon_bb"], x_b), x_b)
+            r_ab = F.l1_loss(self._shape_match(out["recon_ab"], x_b), x_b)
+            L_recon_pair = r_aa + r_ba + r_bb + r_ab
+            L_recon_total = L_recon_total + L_recon_pair
+            recon_per_pair[pair] = {
+                "total": L_recon_pair.detach(),
+                "recon_aa": r_aa.detach(), "recon_ba": r_ba.detach(),
+                "recon_bb": r_bb.detach(), "recon_ab": r_ab.detach(),
+            }
+
+            kl_a = kl_divergence_standard(mu_a, logvar_a)
+            kl_b = kl_divergence_standard(mu_b, logvar_b)
+            L_kl_total = L_kl_total + kl_a + kl_b
+            kl_per_sensor_pair[f"{pair}_a"] = kl_a.detach()
+            kl_per_sensor_pair[f"{pair}_b"] = kl_b.detach()
+
+        L_align_total = L_info_total + self.temporal_cos_weight * L_tcos_total
+        total = alpha * L_align_total + self.lambda_recon * L_recon_total + beta * L_kl_total
+
+        info = {
+            "total": total,
+            "infonce": L_info_total.detach(),          # plain NT-Xent (baseline-equal)
+            "recon": L_recon_total.detach(),
+            "kl": L_kl_total.detach() if torch.is_tensor(L_kl_total) else torch.tensor(float(L_kl_total)),
+            "beta": torch.tensor(float(beta)),
+            "alpha_infonce": torch.tensor(float(alpha)),
+        }
+        info["temporal_cos_total"] = (L_tcos_total.detach() if torch.is_tensor(L_tcos_total)
+                                      else torch.tensor(float(L_tcos_total)))
+        info["temporal_cos_weight"] = torch.tensor(float(self.temporal_cos_weight))
+        for pair in self.PAIR_NAMES:
+            info[f"infonce_{pair}"] = info_per_pair[pair]
+            info[f"recon_{pair}"] = recon_per_pair[pair]["total"]
+            for k in ("recon_aa", "recon_ba", "recon_bb", "recon_ab"):
+                info[f"{k}_{pair}"] = recon_per_pair[pair][k]
+            info[f"temporal_cos_{pair}"] = tcos_per_pair[pair]
+            info[f"temporal_cos_pair_count_{pair}"] = torch.tensor(float(tcos_n_per_pair[pair]))
         for k, v in kl_per_sensor_pair.items():
             info[f"kl_{k}"] = v
         return info

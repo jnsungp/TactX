@@ -3,7 +3,7 @@ import math
 import torch
 import yaml
 from simclr.modules import NT_Xent
-from joint_embedding_learning.utils.losses import CWCL, CrossModalVAELoss, CrossModalVAE3Loss, CrossModalVAE3UniforceLoss, CrossModalVAE3CWCLLoss, CrossModalVAE3NeighborLoss, CrossModalVAE3DebiasedLoss, CrossModalVAE3ZeroSupConLoss, CrossModalCLR3Loss
+from joint_embedding_learning.utils.losses import CWCL, CrossModalVAELoss, CrossModalVAE3Loss, CrossModalVAE3UniforceLoss, CrossModalVAE3CWCLLoss, CrossModalVAE3NeighborLoss, CrossModalVAE3TemporalCosLoss, CrossModalVAE3DebiasedLoss, CrossModalVAE3ZeroSupConLoss, CrossModalCLR3Loss
 
 
 # ---------------------------------------------------------------------------
@@ -137,16 +137,27 @@ def get_loss(args, model_name):
                 cwcl_same_episode_only=getattr(args, 'cwcl_same_episode_only', True),
             )
         elif loss_type == 'neighbor':
-            # NT-Xent (matched cross-sensor) + auxiliary intra-modal cosine
-            # smoothness on ±1 same-(object, episode) frames. Default weight
-            # 0.05 — high enough to smooth, low enough to keep retrieval.
+            # Intra-modal ±1 neighbor soft-positive InfoNCE (2B SupCon-out).
+            # Matched cross-sensor pair weight 1.0 + same-(object, episode)
+            # |Δf|==1 intra-modal weight `neighbor_weight` (default 0.5).
             # Needs an episode-aware batch sampler — train_tri auto-on.
             criterion = CrossModalVAE3NeighborLoss(
                 batch_size=args.batch_size,
                 temperature=args.temperature,
                 lambda_recon=getattr(args, 'lambda_recon', 1.0),
-                neighbor_weight=getattr(args, 'neighbor_weight', 0.05),
+                neighbor_weight=getattr(args, 'neighbor_weight', 0.5),
                 same_episode_only=getattr(args, 'neighbor_same_episode_only', True),
+            )
+        elif loss_type == 'temporal_cos':
+            # Baseline NT-Xent (matched cross-sensor only) + auxiliary
+            # intra-modal cosine alignment on ±1 same-(object, episode)
+            # frames. Cross-modal negative set / NT-Xent gradient unchanged.
+            criterion = CrossModalVAE3TemporalCosLoss(
+                batch_size=args.batch_size,
+                temperature=args.temperature,
+                lambda_recon=getattr(args, 'lambda_recon', 1.0),
+                temporal_cos_weight=getattr(args, 'temporal_cos_weight', 0.05),
+                same_episode_only=getattr(args, 'temporal_cos_same_episode_only', True),
             )
         elif loss_type == 'debiased':
             # False-negative-masked InfoNCE: different-episode-only negatives
@@ -180,7 +191,7 @@ def get_loss(args, model_name):
             raise ValueError(
                 f"Unknown loss '{loss_type}' for cross_modal_vae3 "
                 f"(expected 'infonce', 'uniforce', 'l2', 'cwcl', 'neighbor', "
-                f"'debiased', or 'zero_supcon')"
+                f"'temporal_cos', 'debiased', or 'zero_supcon')"
             )
     elif model_name == 'cross_modal_clr3':
         # Tri-modal plain-contrastive baseline: 3-pair NT-Xent, no recon/KL.
