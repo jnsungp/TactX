@@ -202,7 +202,6 @@ Representation evaluation above operates on recorded tactile data. Reproducing r
 config/                    Dataset splits, normalization, and model settings
 joint_embedding_learning/  Encoders, decoders, losses, data loaders, and trainers
 scripts/                   Preprocessing, training, evaluation, latent conversion
-scripts_vis_paper/         Additional paper-analysis and visualization scripts
 tactile_benchmark/         ACT policies, sensor interfaces, and task configurations
 ```
 
