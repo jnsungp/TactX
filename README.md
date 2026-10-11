@@ -37,7 +37,7 @@ python -m pip install -r requirements.txt
 
 The core dependencies include `torch==2.5.1`, `torchvision==0.20.1`, and `numpy==1.26.4`; see [requirements.txt](requirements.txt) for the full list. The commands below use a CUDA-capable GPU and run from the repository root. Training logs to Weights & Biases; `WANDB_MODE=offline` keeps logs local.
 
-The downstream policy package specifies **Python 3.11** and additional dependencies. Follow the separate [ACT policy workflow](docs/policy_workflow.md) for that environment.
+The downstream policy package specifies **Python 3.11** and additional dependencies. Follow the separate [ACT policy workflow](tactile_benchmark/TACTX_POLICY.md) for that environment.
 
 ## Data
 
@@ -192,7 +192,7 @@ For additional paired dynamic recordings, pass `--dynamic_data_root` with one or
 
 ## Downstream ACT policies
 
-The [policy workflow](docs/policy_workflow.md) covers converting demonstration tactile streams into posterior means, preparing dataset splits, and training an ACT policy with 16-D tactile inputs. Code and model/sensor configurations are in [tactile_benchmark/](tactile_benchmark/).
+The [policy workflow](tactile_benchmark/TACTX_POLICY.md) covers converting demonstration tactile streams into posterior means, preparing dataset splits, and training an ACT policy with 16-D tactile inputs. Code and model/sensor configurations are in [tactile_benchmark/](tactile_benchmark/).
 
 Representation evaluation above operates on recorded tactile data. Reproducing robot policy success rates additionally requires demonstrations, policy checkpoints, and the corresponding robot/sensor deployment setup.
 
@@ -204,7 +204,6 @@ joint_embedding_learning/  Encoders, decoders, losses, data loaders, and trainer
 scripts/                   Preprocessing, training, evaluation, latent conversion
 scripts_vis_paper/         Additional paper-analysis and visualization scripts
 tactile_benchmark/         ACT policies, sensor interfaces, and task configurations
-docs/                      Workflow documentation and figures
 ```
 
 ## Citation

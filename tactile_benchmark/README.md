@@ -2,6 +2,8 @@
 
 ACT policy training and deployment with tactile sensing.
 
+For the TactX 16-D latent policy workflow, see [TACTX_POLICY.md](TACTX_POLICY.md).
+
 ## Installation
 
 ### Prerequisites

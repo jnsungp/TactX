@@ -45,7 +45,7 @@ The converter defaults to no geometric correction at inference. Set `--inference
 
 ## 2. Set up the policy environment
 
-The [policy package](../tactile_benchmark/pyproject.toml) requires Python 3.11. From the repository root:
+The [policy package](pyproject.toml) requires Python 3.11. From the repository root:
 
 ```bash
 conda create -n tactx_policy python=3.11 -y
@@ -58,7 +58,7 @@ The root requirements supply PyTorch, torchvision, NumPy, and scikit-learn; the 
 
 ## 3. Check the demonstration layout
 
-The included [pnp_flexi_latent_TACTX.json](../tactile_benchmark/tactile_policy/configs/datasets/pnp_flexi_latent_TACTX.json) selects these folders relative to `tactile_benchmark/data/recordings/processed/`:
+The included [pnp_flexi_latent_TACTX.json](tactile_policy/configs/datasets/pnp_flexi_latent_TACTX.json) selects these folders relative to `tactile_benchmark/data/recordings/processed/`:
 
 ```text
 TACTX/
@@ -94,7 +94,7 @@ CUDA_VISIBLE_DEVICES=0 python -m tactile_policy.main \
 
 In this trainer, `--num_epochs` controls the training-iteration limit despite its name. `--no_wandb` disables experiment logging; omit it to log online.
 
-The [model configuration](../tactile_benchmark/tactile_policy/configs/models/act_cross_modal_pnp_z16.yaml) selects ACT with two cameras and two tactile streams. Its [sensor configuration](../tactile_benchmark/tactile_policy/configs/sensors/cross_modal_latent_z16.yaml) specifies a 16-D array input and an MLP tactile encoder. Policy weights and normalization statistics are written to `tactile_benchmark/data/checkpoints/pnp_flexi_tactx_ckpt/`.
+The [model configuration](tactile_policy/configs/models/act_cross_modal_pnp_z16.yaml) selects ACT with two cameras and two tactile streams. Its [sensor configuration](tactile_policy/configs/sensors/cross_modal_latent_z16.yaml) specifies a 16-D array input and an MLP tactile encoder. Policy weights and normalization statistics are written to `tactile_benchmark/data/checkpoints/pnp_flexi_tactx_ckpt/`.
 
 ## 5. Transfer across sensors
 
