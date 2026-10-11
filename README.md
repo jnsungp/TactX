@@ -20,10 +20,6 @@ UC San Diego · Seoul National University · Amazon FAR
 
 TactX learns a **shared 16-dimensional tactile representation** across Daimon (vision-based), eFlesh (magnetic), and FlexiTac (resistive) sensors. Sensor-specific encoders learn from paired contacts using contrastive alignment, self- and cross-reconstruction, and KL regularization. The shared representation lets tactile-conditioned ACT policies transfer across sensors without policy retraining.
 
-<p align="center">
-  <img src="docs/assets/architecture.png" alt="TactX: paired tactile observations pass through sensor-specific encoders into a shared latent space, trained with contrastive, reconstruction, and KL losses." width="100%">
-</p>
-
 The [paper](https://arxiv.org/abs/2606.31236) evaluates pick-and-place, plug insertion, board wiping, and object reorientation, including an additional out-of-distribution pick-and-place setting. Average zero-shot cross-sensor policy success improves from **27.5% to 45.9%** over vision-only transfer.
 
 This repository includes representation learning, alignment and reconstruction evaluation, objective baselines, tactile-to-latent conversion, and downstream ACT policy training code.
