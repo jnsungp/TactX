@@ -2,11 +2,9 @@
 
 # TactX (CoRL 2026)
 
-**Official PyTorch implementation of**
-
 ### TactX: Learning Shared Tactile Representations Across Diverse Sensors
 
-Junsung Park · Sachin Bhadang · Carmelo Sferrazza · Sha Yi · Xiaolong Wang
+Junsung Park<sup>*</sup> · Sachin Bhadang<sup>*</sup> · Carmelo Sferrazza · Sha Yi · Xiaolong Wang
 
 UC San Diego · Seoul National University · Amazon FAR
 
