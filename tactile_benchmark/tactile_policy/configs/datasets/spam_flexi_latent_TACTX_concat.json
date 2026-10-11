@@ -1,8 +1,0 @@
-{
-    "train": [
-        "TACTX_concat/flexi_flexi_spam_latent_TACTX_concat"
-    ],
-    "val": [
-        "TACTX_concat/flexi_flexi_spam_val_latent_TACTX_concat"
-    ]
-}

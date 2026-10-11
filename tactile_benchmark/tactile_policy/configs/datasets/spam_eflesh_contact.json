@@ -1,4 +1,0 @@
-{
-    "train": ["contact/eflesh_eflesh_spam_contact"],
-    "val": ["contact/eflesh_eflesh_spam_val_contact"]
-}

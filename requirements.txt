@@ -9,6 +9,6 @@ tqdm>=4.66
 wandb>=0.16
 Pillow>=10.0
 h5py>=3.10
-opencv-python>=4.8
-git+https://github.com/Spijkervet/SimCLR.git
+opencv-python>=4.8,<4.12
+git+https://github.com/Spijkervet/SimCLR.git@2738efae85b3ca1b70b7919c5d7a7837d9d75235
 

@@ -1,1 +1,1 @@
-from joint_embedding_learning.cross_modal.model import CrossModalCLR, MagneticEncoder
+from joint_embedding_learning.cross_modal.model import CrossModalVAE3, CrossModalCLR3, MagneticEncoder

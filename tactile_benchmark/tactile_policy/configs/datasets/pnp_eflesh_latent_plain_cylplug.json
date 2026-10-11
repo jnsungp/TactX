@@ -1,4 +1,0 @@
-{
-    "train": ["eflesh_eflesh_object_pnp_latent_plain_cylplug"],
-    "val": ["eflesh_eflesh_object_pnp_val_latent_plain_cylplug"]
-}

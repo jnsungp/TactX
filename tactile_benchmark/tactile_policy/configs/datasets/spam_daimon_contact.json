@@ -1,4 +1,0 @@
-{
-    "train": ["contact/dai_dai_spam_contact"],
-    "val": ["contact/dai_dai_spam_val_contact"]
-}

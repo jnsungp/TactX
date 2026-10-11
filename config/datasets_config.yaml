@@ -1,395 +1,55 @@
-# ============================================================
-# Cross-Modal Dataset: Daimon (depth from s0) + eFlesh (magnetic)
-# 5 objects: can (3312), cylinder (6568), large_ball (6679), pen (4035), small_ball (10042) = 30636 frames
-# Contact filter: both sensors must be in contact
-# Stats computed from all 5 training objects combined
-# ============================================================
-dataset_cross_modal:
-  dataset_type: 'cross_modal'
-
-  daimon_transforms:
-    - 'resize'
-    - 'normalize'
-
-  eflesh_transforms:
-    - 'normalize'
-
-  image_size: 224
-  daimon_channels: 3
-
-  daimon_stats:
-    mean: [0.126311, 0.126311, 0.126311]
-    std: [0.324535, 0.324535, 0.324535]
-
-  eflesh_stats:
-    mean: [137.958664, -899.769592, -210.221817, -264.862946, -290.407227, 797.167053, 324.655396, 587.242126, -1465.970825, -333.126312, -185.841537, 9.572333, -783.616577, 80.624771, -121.709534]
-    std: [216.976532, 664.938538, 319.759247, 289.498688, 301.617401, 605.135986, 291.086273, 374.469269, 1039.518433, 381.615387, 491.967896, 219.396225, 571.922791, 206.743469, 209.363998]
-
-  daimon_path: 'processed_data/cross_modal/daimon'
-  eflesh_path: 'processed_data/cross_modal/eflesh'
-
-  n_classes_training: 5
-  n_classes_test: 0
-
-  tools:
-    training_tools:
-      - 'can'
-      - 'cylinder'
-      - 'large_ball'
-      - 'pen'
-      - 'small_ball'
-
-    val_tools:
-      - 'can_val'
-      - 'cylinder_val'
-      - 'large_ball_val'
-      - 'pen_val'
-      - 'small_ball_val'
-
-    test_tools: []
-
-# ============================================================
-# Tri-modal cross_modal: Daimon + eFlesh + FlexiTac (pair-only)
-# Layout: latent_data_processed/{de_pair, ef_pair, fd_pair}/{sensor}/ep****_fr****.pt
-# Files are RAW tensors (not dicts):
-#   daimon : (3, 240, 320), eflesh : (15,), flexi : (12, 16)
-# Stats below are placeholders; populate with scripts/compute_tri_stats.py.
-# ============================================================
-dataset_cross_modal_tri:
+dataset_new:
   dataset_type: 'cross_modal_tri'
-  data_root: 'latent_data_processed'
+  data_root: 'policy_learning/data/latent_data_new_processed'
+
+  episode_val_split: true
+  # Per-object val ids (front-half + back-half even stride, ~20% each object).
+  val_episode_ids:
+    circle:            [0, 6, 11, 17, 22, 28, 34, 39, 45, 46, 52, 57, 63, 68, 74, 80, 85, 91]
+    cylinder:          [0, 6, 12, 18, 24, 30, 36, 42, 43, 48, 54, 59, 64, 69, 74, 80, 85]
+    cylinder_vertical: [0, 6, 11, 17, 23, 28, 34, 35, 41, 46, 52, 58, 63, 69]
+    ellipse:           [0, 6, 11, 17, 22, 28, 34, 39, 45, 46, 51, 56, 61, 66, 72, 77, 82, 87, 92]
+    large_ball:        [0, 6, 11, 17, 22, 28, 33, 39, 40, 46, 51, 57, 62, 68, 73, 79]
+    plane:             [0, 6, 12, 17, 23, 29, 35, 40, 46, 52, 53, 58, 64, 69, 74, 80, 85, 90, 95, 101, 106]
+    plane_horizontal:  [0, 6, 11, 17, 22, 28, 34, 39, 45, 46, 52, 57, 63, 68, 74, 80, 85, 91]
+    small_ball:        [0, 5, 11, 16, 21, 26, 32, 37, 42, 48, 53, 58, 63, 69, 74, 75, 80, 86, 91, 96, 101, 107, 112, 117, 123, 128, 133, 138, 144, 149]
+    square:            [0, 6, 13, 19, 20, 26, 33, 39]
+    triangle:          [0, 6, 11, 17, 22, 28, 33, 39, 40, 46, 51, 57, 62, 68, 73, 79]
 
   image_size: 224
 
   daimon_transforms:
     - 'resize'
     - 'normalize'
-  # daimon: 6609 files (de_pair=3252 + fd_pair=3357)
   daimon_stats:
-    mean: [0.091920, -0.043407, -0.045044]
-    std:  [0.230129, 0.136415, 0.112977]
+    mean: [0.074812, 0.012717, 0.008024]
+    std:  [0.246311, 0.110200, 0.110444]
 
   eflesh_transforms:
     - 'normalize'
-  # eflesh: 8894 files (de_pair=3252 + ef_pair=5642)
   eflesh_stats:
-    mean: [26.782779, -514.703113, 115.995235, -2023.415566, 7.838985, 1047.581115, 223.107125, 2531.489869, -1088.107298, -21.523144, -2981.299712, -30.560990, -1813.462424, -38.179990, 218.029818]
-    std:  [786.388902, 1407.679265, 598.348392, 2106.474565, 532.395415, 1565.877061, 654.217583, 2274.906212, 1613.502900, 663.628286, 2402.268524, 744.133281, 2340.596627, 331.950135, 697.778074]
+    mean: [168.756714, -33.555092, 3.738632, -1997.329468, 133.766037, 575.117249, -3.076847, 2565.997559, -690.754944, -129.409500, -3328.376953, 173.320084, -1363.469116, -35.540630, 28.340805]
+    std:  [1576.587280, 1893.798340, 606.527344, 2767.648193, 663.345093, 1856.128418, 863.060547, 3104.303467, 2374.263916, 1000.755371, 3127.004883, 1633.794800, 2417.779785, 489.083435, 944.870911]
 
   flexitac_transforms:
     - 'normalize'
-  # flexi: 8999 files (ef_pair=5642 + fd_pair=3357)
   flexitac_stats:
-    mean: 0.073024
-    std:  0.169825
+    mean: 0.064869
+    std:  0.160324
 
   pairs:
     de:
       sensor_a: 'daimon'
       sensor_b: 'eflesh'
       root:    'de_pair'
+      extra_transforms_a: ['rot180']
     ef:
       sensor_a: 'eflesh'
       sensor_b: 'flexi'
       root:    'ef_pair'
+      extra_transforms_b: ['rot180']
     fd:
       sensor_a: 'flexi'
       sensor_b: 'daimon'
       root:    'fd_pair'
-
-
-# Pooled cyl+plug dynamic DATA, normalized with pooled cyl+plug STATIC stats.
-# Purpose: A/B against dataset_cross_modal_tri_dynamic_all to isolate the stats
-# choice on identical data. Stats are copy-pasted from
-# datasets_config_sachin.yaml::dataset_sachin (pooled cyl+plug static).
-dataset_cross_modal_tri_dynamic_all_staticstats:
-  dataset_type: 'cross_modal_tri_dynamic'
-  data_root:
-    - 'latent_data_processed_object/dynamic_data/cylinder'
-    - 'latent_data_processed_object/dynamic_data/plug'
-
-  image_size: 224
-
-  daimon_transforms:
-    - 'resize'
-    - 'normalize'
-  daimon_stats:
-    mean: [0.075429, -0.048488, -0.046264]
-    std:  [0.199810, 0.139697, 0.119156]
-
-  eflesh_transforms:
-    - 'normalize'
-  eflesh_stats:
-    mean: [-14.108932, -292.387909, 139.747528, -1577.862305, 68.094353, 759.089417, 139.912811, 1915.957764, -698.633789, 28.534527, -2382.388184, -20.109350, -1304.386597, -42.433861, 232.194778]
-    std:  [623.592651, 1262.216797, 464.669495, 1909.640259, 461.466766, 1413.119019, 538.769836, 1971.093628, 1369.160889, 477.245728, 2328.758789, 636.633301, 2016.120361, 276.599152, 515.429810]
-
-  flexitac_transforms:
-    - 'normalize'
-  flexitac_stats:
-    mean: 0.092914
-    std:  0.187092
-
-# ============================================================
-# Tri-modal (dynamic / unpaired): per-sensor flat layout.
-# Layout: latent_data_processed_object/dynamic_data/{daimon,eflesh,flexi}/ep****_fr****.pt
-# Used in Stage 1 (dynamic_pretrain): each modality has its own dataset
-# (no pairing). Stats reuse dataset_cross_modal_tri values (same sensors).
-# ============================================================
-# Stats below are computed from cylinder dynamic data only (see
-# scripts/compute_per_object_stats.py → per_object_stats.yaml::cylinder_dynamic).
-dataset_cross_modal_tri_dynamic:
-  dataset_type: 'cross_modal_tri_dynamic'
-  data_root: 'latent_data_processed_object/dynamic_data/cylinder'
-
-  image_size: 224
-
-  daimon_transforms:
-    - 'resize'
-    - 'normalize'
-  daimon_stats:
-    mean: [0.117708, -0.036830, -0.014407]
-    std:  [0.319115, 0.246383, 0.210564]
-
-  eflesh_transforms:
-    - 'normalize'
-  eflesh_stats:
-    mean: [10.210301, -578.228455, 231.524628, -2454.377441, 180.848129, 1535.976074, 355.683624, 3015.695312, -1819.763062, -57.762875, -4508.965332, -47.120125, -1658.478027, -34.936832, 355.956055]
-    std:  [1144.643799, 1642.139526, 369.930786, 2308.851074, 680.842651, 1779.672729, 880.333740, 2152.750732, 1995.909180, 1129.754883, 1974.621948, 951.026917, 2163.292969, 312.938293, 463.509430]
-
-  flexitac_transforms:
-    - 'normalize'
-  flexitac_stats:
-    mean: 0.070901
-    std:  0.173314
-
-  sensors:
-    D: 'daimon'
-    E: 'eflesh'
-    F: 'flexi'
-
-# Joint cyl+plug dynamic — pooled across both object subdirs (loader concats).
-# Stats pooled over cylinder + plug dynamic data
-# (per_object_stats.yaml::combined_dynamic).
-dataset_cross_modal_tri_dynamic_all:
-  dataset_type: 'cross_modal_tri_dynamic'
-  data_root:
-    - 'latent_data_processed_object/dynamic_data/cylinder'
-    - 'latent_data_processed_object/dynamic_data/plug'
-
-  image_size: 224
-
-  daimon_transforms:
-    - 'resize'
-    - 'normalize'
-  daimon_stats:
-    mean: [0.139313, 0.049800, 0.048521]
-    std:  [0.322621, 0.528660, 0.452871]
-
-  eflesh_transforms:
-    - 'normalize'
-  eflesh_stats:
-    mean: [-78.553833, 390.304871, 184.794846, -3422.989746, 416.974823, 342.517761, -146.886108, 4086.896240, -387.114746, 40.901451, -5453.232422, -249.489990, -2350.631348, -24.285038, 407.784943]
-    std:  [1390.045532, 2477.702637, 590.525818, 2914.992432, 846.716492, 3043.487793, 1275.258789, 3241.182373, 3353.963867, 1096.466187, 2817.191406, 1359.559937, 2552.017090, 820.944519, 889.989624]
-
-  flexitac_transforms:
-    - 'normalize'
-  flexitac_stats:
-    mean: 0.068299
-    std:  0.166601
-
-  sensors:
-    D: 'daimon'
-    E: 'eflesh'
-    F: 'flexi'
-
-# Plug-only dynamic variant — stats computed from plug dynamic data only
-# (per_object_stats.yaml::plug_dynamic).
-dataset_cross_modal_tri_dynamic_plug:
-  dataset_type: 'cross_modal_tri_dynamic'
-  data_root: 'latent_data_processed_object/dynamic_data/plug'
-
-  image_size: 224
-
-  daimon_transforms:
-    - 'resize'
-    - 'normalize'
-  daimon_stats:
-    mean: [0.180987, 0.216905, 0.169906]
-    std:  [0.325249, 0.811843, 0.702001]
-
-  eflesh_transforms:
-    - 'normalize'
-  eflesh_stats:
-    mean: [-194.364670, 1653.954102, 123.827316, -4686.732422, 725.049988, -1214.594238, -802.589539, 5484.500488, 1482.069946, 169.628937, -6685.191406, -513.522705, -3253.682373, -10.387605, 475.406464]
-    std:  [1649.266968, 2794.560547, 786.499939, 3131.677734, 938.005493, 3596.224854, 1406.235718, 3835.975342, 3815.298096, 1037.436157, 3243.950684, 1719.547241, 2731.963867, 1193.792114, 1239.812500]
-
-  flexitac_transforms:
-    - 'normalize'
-  flexitac_stats:
-    mean: 0.064998
-    std:  0.157613
-
-  sensors:
-    D: 'daimon'
-    E: 'eflesh'
-    F: 'flexi'
-
-# ============================================================
-# Tri-modal (object-level layout): same sensors, per-object subdirs.
-# Layout: latent_data_processed_object/{de_pair,ef_pair,fd_pair}/{sensor}/{object}/ep****_fr****.pt
-# Use --objects to select a subset (e.g. --objects cylinder plug).
-# Stats are reused from dataset_cross_modal_tri (same sensor data).
-# ============================================================
-dataset_cross_modal_tri_object:
-  dataset_type: 'cross_modal_tri'
-  data_root: 'latent_data_processed_object'
-
-  image_size: 224
-
-  daimon_transforms:
-    - 'resize'
-    - 'normalize'
-  daimon_stats:
-    mean: [0.091920, -0.043407, -0.045044]
-    std:  [0.230129, 0.136415, 0.112977]
-
-  eflesh_transforms:
-    - 'normalize'
-  eflesh_stats:
-    mean: [26.782779, -514.703113, 115.995235, -2023.415566, 7.838985, 1047.581115, 223.107125, 2531.489869, -1088.107298, -21.523144, -2981.299712, -30.560990, -1813.462424, -38.179990, 218.029818]
-    std:  [786.388902, 1407.679265, 598.348392, 2106.474565, 532.395415, 1565.877061, 654.217583, 2274.906218, 1613.502900, 663.628286, 2402.268524, 744.133281, 2340.596627, 331.950135, 697.778074]
-
-  flexitac_transforms:
-    - 'normalize'
-  flexitac_stats:
-    mean: 0.073024
-    std:  0.169825
-
-  pairs:
-    de:
-      sensor_a: 'daimon'
-      sensor_b: 'eflesh'
-      root:    'de_pair'
-    ef:
-      sensor_a: 'eflesh'
-      sensor_b: 'flexi'
-      root:    'ef_pair'
-    fd:
-      sensor_a: 'flexi'
-      sensor_b: 'daimon'
-      root:    'fd_pair'
-
-# Dynamic dataset drawn from the padded paired data (all 11 objects).
-# sensor_roots maps each modality to the pair dir that contains it (no duplication).
-# Stats match dataset_sachin_padded (the static training default).
-dataset_cross_modal_tri_dynamic_sachin_padded:
-  dataset_type: 'cross_modal_tri_dynamic'
-  episode_val_split: true
-  sensor_roots:
-    D: 'tactile_benchmark/data/latent_data_processed_padded/de_pair'
-    E: 'tactile_benchmark/data/latent_data_processed_padded/de_pair'
-    F: 'tactile_benchmark/data/latent_data_processed_padded/ef_pair'
-
-# Dynamic over latent_data_processed_static — pulls per-sensor data from the
-# paired-static pair dirs. NOTE: DynamicSelfDataset picks up every per-object
-# subdir under each sensor_root, so if `no_contact_threshold/` exists in any of
-# these dirs on disk it WILL be included. Remove that subdir from the remote
-# data root, or filter it out, if you want a no-no_contact run.
-dataset_cross_modal_tri_dynamic_sachin_static12:
-  dataset_type: 'cross_modal_tri_dynamic'
-  episode_val_split: true
-  sensor_roots:
-    D: 'latent_data_processed_static/de_pair'
-    E: 'latent_data_processed_static/de_pair'
-    F: 'latent_data_processed_static/ef_pair'
-
-  image_size: 224
-
-  daimon_transforms:
-    - 'resize'
-    - 'normalize'
-  daimon_stats:
-    mean: [0.068795, -0.001895, -0.008578]
-    std:  [0.205663, 0.249837, 0.248479]
-
-  eflesh_transforms:
-    - 'normalize'
-  eflesh_stats:
-    mean: [24.501642, -350.678070, 43.907925, -1242.634277, 16.994249, 685.652405, 116.613220, 1696.147827, -856.663696, -62.472942, -2021.795288, -105.722397, -1106.986816, -41.088001, 104.477585]
-    std:  [829.504089, 1248.281860, 596.034790, 1630.981567, 484.513275, 1413.057983, 590.679871, 1823.940918, 1565.082153, 748.707703, 2070.673828, 1184.044189, 1731.826172, 308.732666, 814.720520]
-
-  flexitac_transforms:
-    - 'normalize'
-  flexitac_stats:
-    mean: 0.092803
-    std:  0.182347
-
-  sensors:
-    D: 'daimon'
-    E: 'eflesh'
-    F: 'flexi'
-
-  image_size: 224
-
-  daimon_transforms:
-    - 'resize'
-    - 'normalize'
-  daimon_stats:
-    mean: [0.068795, -0.001895, -0.008578]
-    std:  [0.205663, 0.249837, 0.248479]
-
-  eflesh_transforms:
-    - 'normalize'
-  eflesh_stats:
-    mean: [24.501642, -350.678070, 43.907925, -1242.634277, 16.994249, 685.652405, 116.613220, 1696.147827, -856.663696, -62.472942, -2021.795288, -105.722397, -1106.986816, -41.088001, 104.477585]
-    std:  [829.504089, 1248.281860, 596.034790, 1630.981567, 484.513275, 1413.057983, 590.679871, 1823.940918, 1565.082153, 748.707703, 2070.673828, 1184.044189, 1731.826172, 308.732666, 814.720520]
-
-  flexitac_transforms:
-    - 'normalize'
-  flexitac_stats:
-    mean: 0.092803
-    std:  0.182347
-
-  sensors:
-    D: 'daimon'
-    E: 'eflesh'
-    F: 'flexi'
-# Per-sensor view of latent_data_new_processed for L_slow/L_anchor.
-# Same val_episode_ids as dataset_sachin_new so the train/val split is identical
-# on both the paired and per-sensor sides. Stats are placeholders inherited
-# from dataset_sachin_static12 — recompute alongside the paired stats.
-dataset_cross_modal_tri_dynamic_sachin_new:
-  dataset_type: 'cross_modal_tri_dynamic'
-  episode_val_split: true
-  val_episode_ids: [0, 6, 13, 22, 36, 44, 45, 54, 58, 67, 75, 81, 88, 97, 111, 119, 120, 129, 133, 142]
-  sensor_roots:
-    D: 'tactile_benchmark/data/latent_data_new_processed/de_pair'
-    E: 'tactile_benchmark/data/latent_data_new_processed/de_pair'
-    F: 'tactile_benchmark/data/latent_data_new_processed/ef_pair'
-
-  image_size: 224
-
-  # Stats computed on small_ball only (per_object_stats.yaml::small_ball_static).
-  daimon_transforms:
-    - 'resize'
-    - 'normalize'
-  daimon_stats:
-    mean: [0.034527, 0.004822, -0.000229]
-    std:  [0.171310, 0.062119, 0.061471]
-
-  eflesh_transforms:
-    - 'normalize'
-  eflesh_stats:
-    mean: [93.998695, 179.320007, -16.432734, -889.088440, 156.509354, 130.889191, -104.477051, 1196.606812, -264.361511, -87.534500, -1888.986694, 48.766949, -402.123627, -14.586729, -14.329483]
-    std:  [807.420654, 904.564148, 372.574860, 1349.317017, 386.329315, 829.048340, 473.081818, 1428.082520, 1118.719116, 579.895264, 1672.644043, 946.555969, 1084.899048, 268.628418, 412.779938]
-
-  flexitac_transforms:
-    - 'normalize'
-  flexitac_stats:
-    mean: 0.050554
-    std:  0.149914
-
-  sensors:
-    D: 'daimon'
-    E: 'eflesh'
-    F: 'flexi'
+      extra_transforms_b: ['rot180']

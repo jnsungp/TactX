@@ -36,7 +36,7 @@ For each (pair, object, episode) under <data_root>/<pair>/<sensor>/<obj>/ep*_fr*
 Notes:
   - Does NOT modify or copy any original tactile .pt; only writes a small
     labels file per episode (a few hundred bytes).
-  - Eval (scripts/eval_cross_modal_vae3_new.py --contact_label_root ...)
+  - Eval (scripts/evaluate.py --contact_label_root ...)
     loads these labels and matches them to encoder μ samples via
     (object_id, episode_id, frame_id), so the probe sees the SAME frames
     the model was evaluated on.
@@ -44,7 +44,7 @@ Notes:
 Usage:
     # default: fixed threshold 0.1 on per-episode min-max normalized score
     python scripts/build_contact_labels.py \
-        --data_root tactile_benchmark/data/latent_data_new_processed_concat \
+        --data_root policy_learning/data/latent_data_new_processed_concat \
         --out_root contact_labels/dataset_new_concat \
         --visualize
     OBJECTS="circle cylinder cylinder_vertical ellipse large_ball plane plane_horizontal small_ball square triangle"
@@ -53,7 +53,7 @@ for OBJ in $OBJECTS; do
     echo "Processing $OBJ..."
 
     python scripts/build_contact_labels.py \
-        --data_root tactile_benchmark/data/latent_data_new_processed_concat \
+        --data_root policy_learning/data/latent_data_new_processed_concat \
         --out_root contact_labels/dataset_new_concat \
         --objects "$OBJ" \
         --visualize

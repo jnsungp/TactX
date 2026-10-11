@@ -26,7 +26,7 @@ data/logs/
 
 # Local datasets and generated dataset derivatives
 tactile_data_new/
-tactile_benchmark/data/
+policy_learning/data/
 latent_data/
 latent_data_processed*/
 contact_labels/
@@ -36,8 +36,8 @@ per_object_stats_dataset*.yaml
 
 # Model checkpoints and large local artifacts
 checkpoints/
-tactile_benchmark/train_logs/
-tactile_benchmark/pretrained_weights/
+policy_learning/train_logs/
+policy_learning/pretrained_weights/
 _CoRL_2026__Cross_sensor_policy_transfer/
 _CoRL_2026__Cross_sensor_policy_transfer.zip
 *.zip

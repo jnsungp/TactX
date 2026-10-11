@@ -1,4 +1,0 @@
-{
-    "train": ["spam_daimon_latent"],
-    "val": ["spam_daimon_latent_val"]
-}

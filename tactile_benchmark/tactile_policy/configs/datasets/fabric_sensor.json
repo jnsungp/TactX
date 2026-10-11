@@ -1,5 +1,0 @@
-{
-    "train": ["pnp_sensor_fabric"
-            ],
-    "val": ["pnp_sensor_fabric_val"]
-}

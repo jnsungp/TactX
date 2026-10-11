@@ -1,8 +1,0 @@
-{
-    "train": [
-        "TACTX_concat/eflesh_eflesh_plug_insertion_direct_latent_TACTX_concat"
-    ],
-    "val": [
-        "TACTX_concat/eflesh_eflesh_plug_insertion_direct_val_latent_TACTX_concat"
-    ]
-}

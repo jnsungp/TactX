@@ -1,4 +1,0 @@
-{
-    "train": ["contact/eflesh_eflesh_object_pnp_contact"],
-    "val": ["contact/eflesh_eflesh_object_pnp_val_contact"]
-}

@@ -1,4 +1,0 @@
-{
-    "train": ["eflesh_eflesh_object_pnp"],
-    "val": ["eflesh_eflesh_object_pnp_val"]
-}

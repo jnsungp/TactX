@@ -1,1 +1,0 @@
-"""Tactile sensor implementations"""

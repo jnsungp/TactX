@@ -1,4 +1,0 @@
-{
-    "train": ["flexi_flexi_board_wipe"],
-    "val": ["flexi_flexi_board_wipe_val"]
-}

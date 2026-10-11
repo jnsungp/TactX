@@ -1,4 +1,0 @@
-{
-    "train": ["flexi_flexi_object_pnp_latent_cycle"],
-    "val": ["flexi_flexi_object_pnp_val_latent_cycle"]
-}

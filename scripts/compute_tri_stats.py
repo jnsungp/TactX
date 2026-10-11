@@ -6,7 +6,7 @@ Reads:
     latent_data_processed/{ef_pair, fd_pair}/flexi/*.pt    (raw tensor (12, 16))
 
 Outputs YAML-style stats to stdout. Paste them into
-``config/datasets_config.yaml`` under ``dataset_cross_modal_tri``.
+``config/datasets_config.yaml`` under ``dataset_new``.
 
 Usage:
     python scripts/compute_tri_stats.py
@@ -28,7 +28,7 @@ def _iter_files(roots: Iterable[str], sensor: str):
         d = os.path.join(r, sensor)
         if not os.path.isdir(d):
             continue
-        for p in glob.glob(os.path.join(d, '*.pt')):
+        for p in sorted(glob.glob(os.path.join(d, '**', '*.pt'), recursive=True)):
             yield p
 
 
@@ -50,7 +50,7 @@ def daimon_stats(roots):
     n_pix = 0
     files = list(_iter_files(roots, 'daimon'))
     for p in tqdm(files, desc='daimon'):
-        t = _load_tensor(p).numpy()  # (3, H, W)
+        t = _load_tensor(p).double().numpy()  # (3, H, W)
         sum_c += t.sum(axis=(1, 2))
         sumsq_c += (t * t).sum(axis=(1, 2))
         n_pix += t.shape[1] * t.shape[2]
@@ -67,7 +67,7 @@ def eflesh_stats(roots):
     files = list(_iter_files(roots, 'eflesh'))
     arr = np.zeros((len(files), 15), dtype=np.float64)
     for i, p in enumerate(tqdm(files, desc='eflesh')):
-        arr[i] = _load_tensor(p).numpy().reshape(-1)
+        arr[i] = _load_tensor(p).double().numpy().reshape(-1)
     if len(files) == 0:
         return None
     return arr.mean(axis=0).tolist(), arr.std(axis=0).tolist(), len(files)
@@ -80,7 +80,7 @@ def flexi_stats(roots):
     n = 0
     files = list(_iter_files(roots, 'flexi'))
     for p in tqdm(files, desc='flexi'):
-        t = _load_tensor(p).numpy()
+        t = _load_tensor(p).double().numpy()
         s += t.sum()
         sq += (t * t).sum()
         n += t.size
@@ -117,7 +117,7 @@ def main():
     flexi = flexi_stats([ef, fd])
 
     print()
-    print('Paste under dataset_cross_modal_tri in config/datasets_config.yaml:')
+    print('Paste under dataset_new in config/datasets_config.yaml:')
     print('-' * 60)
 
     if daimon is not None:

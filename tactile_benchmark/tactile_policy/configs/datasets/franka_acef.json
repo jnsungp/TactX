@@ -1,4 +1,0 @@
-{
-    "train": ["franka_acef"],
-    "val": ["franka_acef"]
-}

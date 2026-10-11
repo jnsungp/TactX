@@ -5,8 +5,6 @@ from joint_embedding_learning.cross_modal.model import (
 )
 from simclr.modules import get_resnet  # ResNet backbone for the Daimon encoder
 
-import torch
-import os
 
 
 def get_model(model_name, model_details, pretrained=False):
@@ -139,25 +137,6 @@ def get_model(model_name, model_details, pretrained=False):
             projection_dim=model_details['projection_dim'],
             n_features=n_features,
         )
-        return model
-
-    else:
-        raise ValueError(f"Model {model_name} not found")
-
-
-def get_trained_model(model_name, model_details, dataset_type, run_name, device):
-    if model_name == 'cross_modal_vae3':
-        if run_name == 'pretrained':
-            model = get_model(model_name, model_details, pretrained=True)
-        elif run_name == 'random_init':
-            model = get_model(model_name, model_details, pretrained=False)
-        else:
-            model = get_model(model_name, model_details)
-            model_fp = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'checkpoints', dataset_type, model_name, run_name, 'model.pt')
-            model.load_state_dict(torch.load(model_fp, map_location=device))
-
-        model = model.to(device)
-        model.eval()
         return model
 
     else:

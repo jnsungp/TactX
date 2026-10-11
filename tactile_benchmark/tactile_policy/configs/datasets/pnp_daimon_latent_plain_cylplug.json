@@ -1,4 +1,0 @@
-{
-    "train": ["dai_dai_object_pnp_latent_plain_cylplug"],
-    "val": ["dai_dai_object_pnp_val_latent_plain_cylplug"]
-}
