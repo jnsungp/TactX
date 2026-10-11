@@ -6,11 +6,9 @@
 
 ### TactX: Learning Shared Tactile Representations Across Diverse Sensors
 
-Junsung Park\* · Sachin Bhadang\* · Carmelo Sferrazza · Sha Yi · Xiaolong Wang
+Junsung Park · Sachin Bhadang · Carmelo Sferrazza · Sha Yi · Xiaolong Wang
 
 UC San Diego · Seoul National University · Amazon FAR
-
-<sup>\* Equal contribution; author order determined by coin flip.</sup>
 
 [![Project Page](https://img.shields.io/badge/Project%20Page-4285F4?style=for-the-badge)](https://tactx-project.github.io/)
 [![arXiv](https://img.shields.io/badge/arXiv-2606.31236-b31b1b?style=for-the-badge)](https://arxiv.org/abs/2606.31236)
