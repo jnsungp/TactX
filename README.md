@@ -1,118 +1,117 @@
-# TactX
+<div align="center">
 
-TactX learns a shared tactile latent space across heterogeneous tactile sensors. The code in this repository trains and evaluates the cross-sensor representation model described in [TACTX.pdf](TACTX.pdf), including the reconstruction-only, contrastive-only, and L2-alignment baselines used for comparison.
+# TactX (CoRL 2026)
 
-The main release commands use the 10-object paired dataset entry `dataset_new` in `config/datasets_config_sachin.yaml`.
+**Official PyTorch implementation of**
+
+### TactX: Learning Shared Tactile Representations Across Diverse Sensors
+
+Junsung Park\* · Sachin Bhadang\* · Carmelo Sferrazza · Sha Yi · Xiaolong Wang
+
+UC San Diego · Seoul National University · Amazon FAR
+
+<sup>\* Equal contribution; author order determined by coin flip.</sup>
+
+[![Project Page](https://img.shields.io/badge/Project%20Page-4285F4?style=for-the-badge)](https://tactx-project.github.io/)
+[![arXiv](https://img.shields.io/badge/arXiv-2606.31236-b31b1b?style=for-the-badge)](https://arxiv.org/abs/2606.31236)
+
+[![Python](https://img.shields.io/badge/Python-3.10-3776AB?style=flat-square&logo=python&logoColor=white)](conda_environment.yaml)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.5.1-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)](requirements.txt)
+
+</div>
+
+TactX learns a **shared 16-dimensional tactile representation** across Daimon (vision-based), eFlesh (magnetic), and FlexiTac (resistive) sensors. Sensor-specific encoders learn from paired contacts using contrastive alignment, self- and cross-reconstruction, and KL regularization. The shared representation lets tactile-conditioned ACT policies transfer across sensors without policy retraining.
+
+<p align="center">
+  <img src="docs/assets/architecture.png" alt="TactX: paired tactile observations pass through sensor-specific encoders into a shared latent space, trained with contrastive, reconstruction, and KL losses." width="100%">
+</p>
+
+The [paper](https://arxiv.org/abs/2606.31236) evaluates pick-and-place, plug insertion, board wiping, and object reorientation, including an additional out-of-distribution pick-and-place setting. Average zero-shot cross-sensor policy success improves from **27.5% to 45.9%** over vision-only transfer.
+
+This repository includes representation learning, alignment and reconstruction evaluation, objective baselines, tactile-to-latent conversion, and downstream ACT policy training code.
 
 ## Installation
 
-Run commands from the repository root.
+Clone the repository and create the representation-learning environment:
 
 ```bash
+git clone https://github.com/jnsungp/TactX.git
+cd TactX
+
 conda create -n tactx python=3.10 -y
 conda activate tactx
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-The training scripts log to Weights & Biases. Use `WANDB_MODE=offline` in the commands below for local/offline runs.
+The core dependencies include `torch==2.5.1`, `torchvision==0.20.1`, and `numpy==1.26.4`; see [requirements.txt](requirements.txt) for the full list. The commands below use a CUDA-capable GPU and run from the repository root. Training logs to Weights & Biases; `WANDB_MODE=offline` keeps logs local.
 
-## Dataset / Checkpoints
+The downstream policy package specifies **Python 3.11** and additional dependencies. Follow the separate [ACT policy workflow](docs/policy_workflow.md) for that environment.
 
-The source data and trained checkpoints are intentionally not tracked by Git. Place them in the following repo-relative locations:
+## Data
+
+Datasets and pretrained checkpoints are **not bundled with this repository**. The examples below require local paired-contact data, and policy training additionally requires robot demonstrations. The [project page](https://tactx-project.github.io/) is the central resource for the paper and project materials.
+
+Representation-learning examples use the `dataset_new` entry in [config/datasets_config_sachin.yaml](config/datasets_config_sachin.yaml). Its default data root is:
 
 ```text
 tactile_benchmark/data/latent_data_new_processed/
-checkpoints/cross_modal_tri/cross_modal_vae3/
-checkpoints/cross_modal_tri/cross_modal_clr3/
+├── de_pair/
+│   ├── daimon/<object>/ep0000_fr0000.pt
+│   └── eflesh/<object>/ep0000_fr0000.pt
+├── ef_pair/
+│   ├── eflesh/<object>/ep0000_fr0000.pt
+│   └── flexi/<object>/ep0000_fr0000.pt
+└── fd_pair/
+    ├── flexi/<object>/ep0000_fr0000.pt
+    └── daimon/<object>/ep0000_fr0000.pt
 ```
 
-The `dataset_new` config expects paired data under:
+Each pair matches frames by filename within an object directory. The preprocessing script [scripts/preprocess_cross_modal_new.py](scripts/preprocess_cross_modal_new.py) produces the following tensors:
 
-```text
-tactile_benchmark/data/latent_data_new_processed/{de_pair,ef_pair,fd_pair}/{sensor}/{object}/ep*_fr*.pt
-```
+| Sensor | Sensing modality | Stored tensor per frame |
+| :--- | :--- | :--- |
+| Daimon | Vision-based | `(3, 240, 320)`: depth, shear-x, shear-y |
+| eFlesh | Magnetic | `(15,)`: five 3-axis readings |
+| FlexiTac | Resistive | `(12, 16)`: pressure grid |
 
-Checkpoint directories used for evaluation should contain `model_details.yaml` and either `model_ep100.pt` or `model.pt`.
+The loader resizes Daimon inputs to `224 × 224` and applies the configured normalization and pair-specific orientation corrections. `dataset_new` defines held-out episode IDs separately for each object. If using a different dataset, update its paths, normalization statistics, and splits accordingly.
 
-Define the object list once per shell:
+Define the ten-object list once in the shell used for training and evaluation:
 
 ```bash
 OBJECTS="circle cylinder cylinder_vertical ellipse large_ball plane plane_horizontal small_ball square triangle"
 ```
 
-## Training
+## Train
 
-Train the TactX objective: InfoNCE alignment on posterior means, self/cross reconstruction, and KL regularization.
+### TactX representation
+
+Train the `cross_modal_vae3` model with paired batches from all three sensor pairs:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 WANDB_MODE=offline python scripts/train_static_sachin.py \
+CUDA_VISIBLE_DEVICES=0 WANDB_MODE=offline python -m scripts.train_static_sachin \
     --dataset_name dataset_new \
+    --model_name cross_modal_vae3 \
     --device cuda:0 \
-    --run_name infonce_recon \
+    --run_name tactx \
     --objects $OBJECTS \
     --epochs 300 \
-    --num_workers 32
+    --num_workers 4
 ```
 
-Optional contact-label-aware variant:
+The model and loss settings are in [config/models_config.yaml](config/models_config.yaml). The current `cross_modal_vae3` configuration uses a 16-D latent, a ResNet-18 Daimon encoder, an eFlesh MLP, and a residual CNN for FlexiTac. It uses Adam with learning rate `1e-4`, batch size `64` per sensor pair, contrastive temperature `0.01`, reconstruction weight `1.0`, and KL weight warmed up to `0.1` over 30 epochs. The command above overrides the configuration's 100-epoch default to 300 epochs.
+
+### Objective baselines
+
+The repository also implements reconstruction-only, contrastive-only, and L2-alignment variants:
+
+<details>
+<summary>Baseline training commands</summary>
+
+**Reconstruction + KL, without contrastive alignment:**
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 WANDB_MODE=offline python scripts/train_static_sachin.py \
-    --dataset_name dataset_new \
-    --device cuda:0 \
-    --run_name infonce_recon \
-    --objects $OBJECTS \
-    --epochs 100 \
-    --debiased \
-    --contact_label_root contact_labels/dataset_new
-```
-
-## Evaluation
-
-First build contact labels if you want the contact probe:
-
-```bash
-python scripts/build_contact_labels.py \
-    --data_root tactile_benchmark/data/latent_data_new_processed \
-    --out_root contact_labels/dataset_new \
-    --objects $OBJECTS \
-    --visualize
-```
-
-Evaluate a trained checkpoint:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 python scripts/eval_cross_modal_vae3_new.py \
-    --checkpoint_dir checkpoints/cross_modal_tri/cross_modal_vae3/dataset_new_run_infonce_recon_db_20260524_172250 \
-    --dataset_name dataset_new \
-    --objects $OBJECTS \
-    --contact_label_root contact_labels/dataset_new \
-    --out_dir eval_results/dataset_new_infonce_recon \
-    --device cuda:0
-```
-
-Add dynamic evaluation data when available:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 python scripts/eval_cross_modal_vae3_new.py \
-    --checkpoint_dir checkpoints/cross_modal_tri/cross_modal_vae3/dataset_new_run_infonce_recon_db_20260524_172250 \
-    --dataset_name dataset_new \
-    --objects $OBJECTS \
-    --dynamic_data_root latent_data/latent_data_processed_dynamic/pnp latent_data/latent_data_processed_dynamic/wipe latent_data/latent_data_processed_dynamic/plug \
-    --dynamic_objects pnp wipe plug \
-    --contact_label_root contact_labels/dataset_new \
-    --out_dir eval_results/dataset_new_infonce_recon_dynamic \
-    --device cuda:0
-```
-
-For a contrastive-only checkpoint, add `--contrastive_only` and point `--checkpoint_dir` to the `cross_modal_clr3` run.
-
-## Baselines
-
-Reconstruction only:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 WANDB_MODE=offline python scripts/train_static_sachin.py \
+CUDA_VISIBLE_DEVICES=0 WANDB_MODE=offline python -m scripts.train_static_sachin \
     --dataset_name dataset_new \
     --device cuda:0 \
     --run_name recon_only \
@@ -121,81 +120,117 @@ CUDA_VISIBLE_DEVICES=0 WANDB_MODE=offline python scripts/train_static_sachin.py 
     --infonce_warmup_start 9999
 ```
 
-Contrastive only:
+**Contrastive-only (`cross_modal_clr3`, without decoders or KL):**
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 WANDB_MODE=offline python scripts/train_static_sachin.py \
+CUDA_VISIBLE_DEVICES=0 WANDB_MODE=offline python -m scripts.train_static_sachin \
     --dataset_name dataset_new \
     --model_name cross_modal_clr3 \
     --device cuda:0 \
-    --run_name clr_only \
+    --run_name contrastive_only \
     --objects $OBJECTS \
     --epochs 100
 ```
 
-L2 alignment / Uniforce-style baseline:
+**L2 alignment + reconstruction + KL:**
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 WANDB_MODE=offline python scripts/train_uniforce_sachin.py \
+CUDA_VISIBLE_DEVICES=0 WANDB_MODE=offline python -m scripts.train_uniforce_sachin \
     --dataset_name dataset_new \
     --device cuda:0 \
-    --run_name uniforce \
+    --run_name l2_alignment \
     --objects $OBJECTS \
     --epochs 300
 ```
 
-Optional temporal slow/anchor baseline:
+</details>
 
-```bash
-CUDA_VISIBLE_DEVICES=0 WANDB_MODE=offline python scripts/train_slow_anchor_sachin.py \
-    --dataset_name dataset_new \
-    --dynamic_dataset_name dataset_cross_modal_tri_dynamic_sachin_new \
-    --device cuda:0 \
-    --run_name anchor \
-    --objects $OBJECTS \
-    --epochs 100 \
-    --lambda_slow 4.0 \
-    --lambda_anchor 1.0
+## Checkpoints
+
+Training writes a timestamped run directory with weights and the model/data configuration:
+
+```text
+checkpoints/cross_modal_tri/cross_modal_vae3/dataset_new_run_tactx_<timestamp>/
+├── model.pt
+├── model_details.yaml
+└── dataset_details.yaml
 ```
 
-## Visualization
+`model.pt` is updated during training and saved again at completion. Longer runs also retain selected `model_ep*.pt` snapshots. Contrastive-only runs are saved under `checkpoints/cross_modal_tri/cross_modal_clr3/`.
 
-Evaluation writes metrics and figures under `--out_dir`, including cosine distributions, t-SNE plots, reconstruction grids, and optional dynamic overlays. These generated outputs are ignored by Git.
+Keep the configuration files with the weights. In particular, the current residual FlexiTac model and legacy `small_cnn` checkpoints use different architectures; loading must use the checkpoint's own `model_details.yaml`.
 
-For quick plot generation during development, reduce t-SNE cost:
+## Evaluation
+
+Set `CHECKPOINT_DIR` to a trained run and evaluate the same dataset and object split used during training:
 
 ```bash
-python scripts/eval_cross_modal_vae3_new.py \
-    --checkpoint_dir <checkpoint_dir> \
+CHECKPOINT_DIR="/path/to/trained/run"
+
+CUDA_VISIBLE_DEVICES=0 python -m scripts.eval_cross_modal_vae3_new \
+    --checkpoint_dir "$CHECKPOINT_DIR" \
+    --checkpoint_file model.pt \
     --dataset_name dataset_new \
     --objects $OBJECTS \
-    --out_dir eval_results/smoke_eval \
-    --max_tsne_points 200 \
+    --out_dir eval_results/tactx \
     --device cuda:0
 ```
 
-## Repository Structure
+The evaluator writes `metrics.txt` and figures for paired/transitive cosine similarity, latent L2 distance, cross-modal retrieval, sensor-identity probes, self/cross reconstruction, and t-SNE. Use `--max_tsne_points 2000` to limit the number of plotted points. For a `cross_modal_clr3` checkpoint, add `--contrastive_only`; reconstruction evaluation is skipped.
 
-```text
-config/                    Dataset and model configuration files
-docs/                      Additional training notes
-joint_embedding_learning/  TactX models, losses, datasets, and training loops
-scripts/                   Training, evaluation, preprocessing, and visualization scripts
-tactile_benchmark/         Downstream tactile-policy utilities and configs
+The explicit `--checkpoint_file model.pt` selects the final saved weights. Without that flag, the evaluator prefers `model_ep100.pt` when present.
+
+<details>
+<summary>Optional contact probes and dynamic-data evaluation</summary>
+
+Build threshold-derived contact labels from the paired tactile recordings:
+
+```bash
+python -m scripts.build_contact_labels \
+    --data_root tactile_benchmark/data/latent_data_new_processed \
+    --out_root contact_labels/dataset_new \
+    --objects $OBJECTS
 ```
 
-Local datasets, checkpoints, W&B logs, contact labels, and generated figures are ignored by `.gitignore`.
+Then add `--contact_label_root contact_labels/dataset_new` to the evaluation command to enable contact probes.
+
+For additional paired dynamic recordings, pass `--dynamic_data_root` with one or more directories containing `de_pair/`, `ef_pair/`, and `fd_pair/`, and `--dynamic_objects` with the corresponding object/task directory names in the same order.
+
+</details>
+
+## Downstream ACT policies
+
+The [policy workflow](docs/policy_workflow.md) covers converting demonstration tactile streams into posterior means, preparing dataset splits, and training an ACT policy with 16-D tactile inputs. Code and model/sensor configurations are in [tactile_benchmark/](tactile_benchmark/).
+
+Representation evaluation above operates on recorded tactile data. Reproducing robot policy success rates additionally requires demonstrations, policy checkpoints, and the corresponding robot/sensor deployment setup.
+
+## Repository structure
+
+```text
+config/                    Dataset splits, normalization, and model settings
+joint_embedding_learning/  Encoders, decoders, losses, data loaders, and trainers
+scripts/                   Preprocessing, training, evaluation, latent conversion
+scripts_vis_paper/         Additional paper-analysis and visualization scripts
+tactile_benchmark/         ACT policies, sensor interfaces, and task configurations
+docs/                      Workflow documentation and figures
+```
 
 ## Citation
 
-If you use this code, please cite the paper. Replace the placeholder fields once the final citation is available.
+If you find this work useful, please cite our paper:
 
 ```bibtex
-@inproceedings{tactx2026,
-  title     = {TactX: Learning Shared Tactile Representations Across Diverse Sensors},
-  author    = {Anonymous Authors},
-  booktitle = {Conference on Robot Learning},
-  year      = {2026}
+@misc{park2026tactx,
+  title         = {TactX: Learning Shared Tactile Representations Across Diverse Sensors},
+  author        = {Park, Junsung and Bhadang, Sachin and Sferrazza, Carmelo and Yi, Sha and Wang, Xiaolong},
+  year          = {2026},
+  eprint        = {2606.31236},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.RO},
+  url           = {https://arxiv.org/abs/2606.31236}
 }
 ```
 
+## Acknowledgements
+
+The representation-learning code uses [SimCLR](https://github.com/Spijkervet/SimCLR) components. The policy implementation builds on ACT and includes adapted DETR components under [tactile_benchmark/tactile_policy/third_party/detr/](tactile_benchmark/tactile_policy/third_party/detr/), with their [upstream license](tactile_benchmark/tactile_policy/third_party/detr/LICENSE).
